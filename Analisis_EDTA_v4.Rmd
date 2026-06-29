@@ -1,0 +1,2605 @@
+---
+title: "Análisis de elementos transponibles anotados por EDTA"
+author: "Sergio Civera Arroyo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_caption: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r configuracion-global, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introducción
+
+Los elementos transponibles (TEs) son secuencias de ADN con capacidad de
+moverse o copiarse dentro del genoma, y constituyen una fracción
+mayoritaria del genoma en la mayoría de plantas. Su anotación
+sistemática es fundamental para comprender la estructura, evolución y
+regulación génica de un organismo.
+
+En este informe se analiza la anotación de elementos transponibles
+obtenida con EDTA (*Extensive de novo TE Annotator*) v2.3 en el genoma
+de *Castanea sativa* (castaño europeo), ensamblado a nivel cromosómico
+en 12 cromosomas.
+
+## Objetivos
+
+- Describir la composición global de los elementos repetitivos anotados
+  por EDTA en el genoma de *Castanea sativa*.
+- Analizar la abundancia relativa de los principales tipos de elementos
+  transponibles, diferenciando entre retrotransposones y transposones de
+  ADN.
+- Comparar la distribución cromosómica y la densidad genómica de las
+  superfamilias de retrotransposones LTR y de transposones de ADN.
+- Estimar la edad de inserción de los retrotransposones LTR.
+- Evaluar la relación espacial de los elementos LTR con los genes.
+- Analizar la contribución de los MITEs (*Miniature Inverted-repeat
+  Transposable Elements*) frente a los elementos TIR autónomos.
+
+```{r librerias, message=FALSE, warning=FALSE, include=FALSE}
+library(rtracklayer)    # Importación de archivos GFF/GFF3
+library(data.table)     # Lectura y manipulación eficiente de datos
+library(dplyr)          # Manipulación de datos
+library(tidyr)          # Reorganización de datos
+library(stringr)        # Manejo de cadenas de texto
+library(ggplot2)        # Visualización de datos
+library(forcats)        # Manejo de factores
+library(GenomicRanges)  # Operaciones con rangos genómicos
+library(karyoploteR)    # Gráficos de cariotipo
+library(readr)          # Lectura de archivos delimitados
+library(scales)         # Escalas para gráficos
+library(Biostrings)     # Manejo de secuencias biológicas
+library(DT)             # Tablas interactivas HTML
+library(patchwork)      # Representar los cromosmas
+
+# Crea un vector con los colores de cada elemento.
+colores_superfamilias <- c(
+  # LTR
+  "Gypsy"   = "#d7191c",
+  "Copia"   = "#2c7bb6",
+  "Unknown" = "gray50",
+  # TIR
+  "Mutator"       = "#8E44AD",
+  "hAT"           = "#2980B9",
+  "PIF-Harbinger" = "#E74C3C",
+  "CACTA"         = "#27AE60",
+  "Tc1-Mariner"   = "#F39C12",
+  # MITEs vs autónomos
+  "MITE"     = "#E67E22",
+  "Autónomo" = "#2C3E50",
+  # Otros
+  "Genes"    = "darkgreen"
+)
+```
+
+```{r rutas-archivos, include=FALSE}
+# ============================================================
+# RUTAS DE ARCHIVOS DE ENTRADA
+# Actualiza estas rutas a la ubicación de tus archivos locales
+# ============================================================
+
+# GFF3 con los elementos transponibles intactos anotados por EDTA
+ruta_gff3_edta    <- "ruta/al/gff" # <- Cambiar 
+
+# Ruta al FASTA
+ruta_fasta_genoma <- "ruta/al/fasta"
+
+# GFF con la anotación de genes del NCBI (No tiene por qué ser del NCBI)
+ruta_gff_genes_ncbi   <- "ruta/al/gff" #<- Cambiar
+
+
+```
+
+
+
+```{r importar-datos, message=FALSE, warning=FALSE, include=FALSE}
+# -------------------------------------------------------
+# IMPORTACIÓN DE DATOS
+# -------------------------------------------------------
+
+# 1. GFF3 de EDTA: importado como GRanges y como data frame
+gff3_edta_gr <- import(ruta_gff3_edta)
+gff3_edta_df <- as.data.frame(gff3_edta_gr)
+
+# 2. GFF de genes del NCBI: importado como GRanges y como data frame
+gff_genes_ncbi_gr <- import(ruta_gff_genes_ncbi)
+gff_genes_ncbi_df <- as.data.frame(gff_genes_ncbi_gr)
+
+# -------------------------------------------------------
+# TAMAÑO DEL GENOMA: calculado directamente desde el FASTA
+# fasta.seqlengths() solo lee las cabeceras, no las secuencias
+# -------------------------------------------------------
+longitudes_fasta_raw <- fasta.seqlengths(ruta_fasta_genoma)
+genome_size <- sum(longitudes_fasta_raw)
+
+# -------------------------------------------------------
+# CÁLCULO DE ESTADÍSTICOS POR CLASE DE TE (integrado desde EDTA_stats.R)
+# Se calculan directamente desde el GFF3, sin necesidad de generar CSVs intermedios
+# -------------------------------------------------------
+
+# Calcular clases de TE directamente desde gff3_edta_df (ya importado con rtracklayer)
+# Garantiza coherencia con el resto del análisis: todos los chunks parten del mismo objeto
+gff_dt <- as.data.table(gff3_edta_df) %>%
+  mutate(
+    type = as.character(type),
+    bp   = end - start + 1
+  )
+
+# Excluir features auxiliares de los LTR estructurales
+exclude_types <- c("long_terminal_repeat", "target_site_duplication", "repeat_region")
+te_features <- gff_dt[!type %in% exclude_types]
+
+# Mapeo tipo → clase TE
+map_type_to_class <- function(type_vec) {
+  dplyr::case_when(
+    type_vec == "L1_LINE_retrotransposon"         ~ "LINE/L1",
+    type_vec == "RTE_LINE_retrotransposon"         ~ "LINE/RTE",
+    type_vec == "Gypsy_LTR_retrotransposon"        ~ "LTR/Gypsy",
+    type_vec == "Copia_LTR_retrotransposon"        ~ "LTR/Copia",
+    type_vec == "LTR_retrotransposon"              ~ "LTR/unknown",
+    type_vec == "tRNA_SINE_retrotransposon"        ~ "SINE/tRNA",
+    type_vec == "CACTA_TIR_transposon"             ~ "TIR/CACTA",
+    type_vec == "Mutator_TIR_transposon"           ~ "TIR/Mutator",
+    type_vec == "PIF_Harbinger_TIR_transposon"     ~ "TIR/PIF_Harbinger",
+    type_vec == "Tc1_Mariner_TIR_transposon"       ~ "TIR/Tc1_Mariner",
+    type_vec == "hAT_TIR_transposon"               ~ "TIR/hAT",
+    type_vec == "low_complexity"                   ~ "low_complexity",
+    type_vec == "DIRS_YR_retrotransposon"          ~ "nonLTR/DIRS_YR",
+    type_vec == "pararetrovirus"                   ~ "nonLTR/pararetrovirus",
+    type_vec == "helitron"                         ~ "nonTIR/helitron",
+    type_vec == "rRNA_gene"                        ~ "rDNA/45S",
+    type_vec == "repeat_fragment"                  ~ "repeat_fragment",
+    TRUE                                           ~ paste0("other/", type_vec)
+  )
+}
+
+# Mapeo clase → superclase
+map_class_to_superclass <- function(class_vec) {
+  dplyr::case_when(
+    class_vec %in% c("LINE/L1", "LINE/RTE")                        ~ "LINE",
+    class_vec %in% c("LTR/Gypsy", "LTR/Copia", "LTR/unknown")     ~ "LTR",
+    class_vec == "SINE/tRNA"                                        ~ "SINE",
+    class_vec %in% c("TIR/CACTA", "TIR/Mutator", "TIR/PIF_Harbinger",
+                     "TIR/Tc1_Mariner", "TIR/hAT")                 ~ "TIR",
+    class_vec == "low_complexity"                                   ~ "low_complexity",
+    class_vec %in% c("nonLTR/DIRS_YR", "nonLTR/pararetrovirus")    ~ "nonLTR",
+    class_vec == "nonTIR/helitron"                                  ~ "nonTIR",
+    class_vec == "rDNA/45S"                                         ~ "rDNA",
+    class_vec == "repeat_fragment"                                  ~ "repeat_fragment",
+    TRUE                                                            ~ "other"
+  )
+}
+
+te_features[, te_class := map_type_to_class(type)]
+
+# Calcular estadísticos por clase
+class_stats_dt <- te_features[, .(
+  Count    = .N,
+  bpMasked = sum(bp)
+), by = te_class][order(te_class)]
+
+class_stats_dt[, pct_masked  := round(bpMasked / genome_size * 100, 2)]
+class_stats_dt[, superclass  := map_class_to_superclass(te_class)]
+
+# Convertir a data.frame con los nombres que usa el resto del RMD
+clases_te_df <- as.data.frame(class_stats_dt[, .(
+  te_class, superclass, Count, bpMasked, pct_masked
+)])
+```
+
+```{r preparar-cromosomas, include=FALSE}
+# -------------------------------------------------------
+# PREPARACIÓN DEL OBJETO DE CROMOSOMAS PARA KARYOPLOTTER
+# -------------------------------------------------------
+
+# 1. Reutilizar las longitudes cromosómicas ya calculadas en importar-datos
+#    (fasta.seqlengths() ya fue llamado allí para obtener genome_size)
+longitudes_raw <- longitudes_fasta_raw
+# Limpiar nombres: quedarse solo con el primer token (antes del espacio)
+names(longitudes_raw) <- str_extract(names(longitudes_raw), "^\\S+")
+
+
+# 2. Construir mapa de cromosomas filtrando solo los cromosomas canónicos
+mapa_cromosomas_df <- data.frame(
+  seqname_original = names(longitudes_raw),
+  longitud_bp      = as.integer(longitudes_raw)
+) %>%
+ # filter(str_detect(seqname_original, "^chr\\d+_hap2$")) %>%
+  mutate(
+    numero_cromosoma = as.integer(str_extract(seqname_original, "\\d+")),
+    nombre_chr       = paste0("Chr_", numero_cromosoma)
+  ) %>%
+  arrange(numero_cromosoma)
+
+# Verificar que se han recuperado los 12 cromosomas
+stopifnot(
+  "No se encontraron 12 cromosomas canónicos en el FASTA" =
+    nrow(mapa_cromosomas_df) == 12
+)
+
+# 3. Construir vector de renombrado: chr1_hap2 → Chr_1
+mapa_renombrado <- setNames(
+  mapa_cromosomas_df$nombre_chr,
+  mapa_cromosomas_df$seqname_original
+)
+
+# 4. Crear objeto GRanges del genoma (Chr_1 ... Chr_12)
+cromosomas_gr <- mapa_cromosomas_df %>%
+  mutate(start = 1L) %>%
+  makeGRangesFromDataFrame(
+    seqnames.field     = "nombre_chr",
+    start.field        = "start",
+    end.field          = "longitud_bp",
+    keep.extra.columns = TRUE
+  )
+
+# Forzar orden numérico en seqlevels
+seqlevels(cromosomas_gr) <- paste0("Chr_", 1:12)
+
+# 5. Renombrar seqnames en el data frame de EDTA
+gff3_edta_df <- gff3_edta_df %>%
+  mutate(seqnames = mapa_renombrado[as.character(seqnames)])
+
+stopifnot(
+  "Hay seqnames sin mapear en el GFF3 de EDTA" =
+    !any(is.na(gff3_edta_df$seqnames))
+)
+
+##### Si usas GFF del NCBI usar este bloque ####
+
+# 6. Preparar data frame de genes del NCBI
+#    El GFF del NCBI usa accesiones RefSeq → renombrar via TSV original del hap1
+#    NOTA: sustituir por el GFF de genes correspondiente al hap2 cuando esté disponible
+#genes_ncbi_df <- gff_genes_ncbi_df %>%
+  #filter(type == "gene", seqnames != "NC_054204.1") %>%
+  #select(seqnames, start, end, type, Name) %>%
+  #mutate(seqnames = nombres_nuevos_chr[as.character(seqnames)])
+
+
+# 6. Preparar data frame de genes del hap2
+#    El GFF de genes usa los mismos seqnames que el GFF3 de EDTA (chr1_hap2 ... chr12_hap2)
+#    → renombrado directo con mapa_renombrado, sin pasar por accesiones RefSeq
+genes_ncbi_df <- gff_genes_ncbi_df %>%
+  filter(type == "gene") %>%
+  select(seqnames, start, end, type, Name) %>%
+  mutate(seqnames = mapa_renombrado[as.character(seqnames)])
+
+stopifnot(
+  "Hay seqnames sin mapear en el GFF de genes" =
+    !any(is.na(genes_ncbi_df$seqnames))
+)
+```
+
+```{r crear-granges-ltr, include=FALSE}
+# -------------------------------------------------------
+# OBJETOS GRanges PARA LTR RETROTRANSPOSONES Y GENES
+# -------------------------------------------------------
+
+gypsy_gr   <- gff3_edta_df %>%
+  filter(type == "Gypsy_LTR_retrotransposon") %>%
+  makeGRangesFromDataFrame()
+
+copia_gr   <- gff3_edta_df %>%
+  filter(type == "Copia_LTR_retrotransposon") %>%
+  makeGRangesFromDataFrame()
+
+genes_gr   <- genes_ncbi_df %>%
+  makeGRangesFromDataFrame()
+```
+
+## Resultados
+
+### Composición general de los elementos repetitivos
+
+```{r tabla-composicion-general, echo=FALSE, message=FALSE, warning=FALSE}
+# Categorizar: LINE y SINE → nonLTR; el resto conserva su superclase
+composicion_por_categoria_df <- clases_te_df %>%
+  rename(
+    superclase           = superclass,
+    numero_elementos     = Count,
+    pb_enmascaradas      = bpMasked,
+    porcentaje_enmascarado = pct_masked
+  ) %>%
+  mutate(
+    categoria_principal = if_else(
+      superclase %in% c("LINE", "SINE"),
+      "nonLTR",
+      superclase
+    )
+  ) %>%
+  group_by(categoria_principal) %>%
+  summarise(
+    numero_elementos       = sum(numero_elementos, na.rm = TRUE),
+    pb_enmascaradas        = sum(pb_enmascaradas, na.rm = TRUE),
+    porcentaje_enmascarado = sum(porcentaje_enmascarado, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pb_enmascaradas))
+
+datatable(
+  composicion_por_categoria_df,
+  options = list(scrollX = TRUE, autoWidth = TRUE)
+)
+```
+
+La tabla muestra la composición de los principales tipos de elementos
+repetitivos identificados en el genoma analizado, indicando tanto el
+número de elementos como la longitud total ocupada en pares de bases
+(bp).
+
+```{r texto-categoria-top, warning=FALSE, include=FALSE}
+# Extraer la categoría con mayor número de pb enmascaradas
+categoria_top_df <- composicion_por_categoria_df %>%
+  slice_max(pb_enmascaradas, n = 1)
+
+categoria_top_nombre   <- categoria_top_df$categoria_principal
+categoria_top_bp       <- categoria_top_df$pb_enmascaradas
+categoria_top_bp_fmt   <- format(categoria_top_bp, big.mark = " ", scientific = FALSE)
+categoria_top_n        <- categoria_top_df$numero_elementos
+categoria_top_n_fmt    <- format(categoria_top_n,  big.mark = " ", scientific = FALSE)
+
+# Total de elementos repetitivos y porcentaje del genoma enmascarado
+total_rep_n            <- sum(composicion_por_categoria_df$numero_elementos, na.rm = TRUE)
+total_rep_n_fmt        <- format(total_rep_n, big.mark = " ", scientific = FALSE)
+total_rep_bp           <- sum(composicion_por_categoria_df$pb_enmascaradas, na.rm = TRUE)
+total_rep_bp_fmt       <- format(total_rep_bp, big.mark = " ", scientific = FALSE)
+total_rep_pct          <- round(total_rep_bp / genome_size * 100, 2)
+```
+
+En total se anotaron **`r total_rep_n_fmt`** elementos repetitivos, que
+ocupan **`r total_rep_bp_fmt`** bp y representan el **`r total_rep_pct`
+%** del genoma. La categoría más abundante fue
+**`r categoria_top_nombre`**, con **`r categoria_top_n_fmt`** elementos
+totales y una ocupación de aproximadamente **`r categoria_top_bp_fmt`**
+bp.
+
+```{r grafico-categorias-principales, echo=FALSE, warning=FALSE, fig.cap="Figura 1. Porcentaje de elementos repetitivos respecto a la longitud del genoma."}
+# Calcular porcentaje relativo de cada categoría respecto al total de pb
+composicion_con_pct_df <- composicion_por_categoria_df %>%
+  mutate(
+    porcentaje_relativo = round(
+      pb_enmascaradas / sum(pb_enmascaradas) * 100, 2
+    )
+  )
+
+# Agrupar categorías con < 2.5 % como "Otros"
+composicion_agrupada_df <- composicion_con_pct_df %>%
+  mutate(
+    categoria_agrupada = if_else(
+      porcentaje_relativo < 2.5,
+      "Otros",
+      categoria_principal
+    )
+  ) %>%
+  group_by(categoria_agrupada) %>%
+  summarise(
+    numero_elementos       = sum(numero_elementos,       na.rm = TRUE),
+    pb_enmascaradas        = sum(pb_enmascaradas,        na.rm = TRUE),
+    porcentaje_enmascarado = sum(porcentaje_enmascarado, na.rm = TRUE),
+    porcentaje_relativo    = sum(porcentaje_relativo,    na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Ordenar: categorías grandes desc. y "Otros" al final
+orden_categorias <- c(
+  composicion_agrupada_df %>%
+    filter(categoria_agrupada != "Otros") %>%
+    arrange(desc(porcentaje_enmascarado)) %>%
+    pull(categoria_agrupada),
+  "Otros"
+)
+
+composicion_agrupada_df <- composicion_agrupada_df %>%
+  mutate(categoria_agrupada = factor(categoria_agrupada, levels = orden_categorias))
+
+ggplot(
+  composicion_agrupada_df,
+  aes(x = "", y = porcentaje_enmascarado, fill = categoria_agrupada)
+) +
+  geom_col(position = position_stack(reverse = TRUE), width = 0.5) +
+  labs(
+    x       = "Categoría principal",
+    y       = "Porcentaje enmascarado",
+    fill    = NULL
+  ) +
+  theme_minimal()
+```
+
+En el gráfico se muestra la proporción de elementos repetitivos
+anotados.
+
+```{r texto-dominancia, warning=FALSE, include=FALSE}
+# Ordenar por porcentaje relativo para extraer el top 3
+ranking_categorias_df <- composicion_con_pct_df %>%
+  arrange(desc(porcentaje_relativo))
+
+frase_dominancia <- sprintf(
+  "Los elementos repetitivos estuvieron dominados por %s (**%.1f%%** del total de la secuencia enmascarada), seguidos de %s (**%.1f%%**) y %s (**%.1f%%**).",
+  ranking_categorias_df$categoria_principal[1], ranking_categorias_df$porcentaje_relativo[1],
+  ranking_categorias_df$categoria_principal[2], ranking_categorias_df$porcentaje_relativo[2],
+  ranking_categorias_df$categoria_principal[3], ranking_categorias_df$porcentaje_relativo[3]
+)
+```
+
+`r frase_dominancia`
+
+### Transposones
+
+#### Retrotransposones (Transposones Clase I)
+
+```{r tabla-retroelementos, echo=FALSE}
+# Tabla con superclases de retrotransposones: LINE, SINE y LTR
+# Partimos de clases_te_df con renombrado limpio de columnas
+retroelementos_df <- clases_te_df %>%
+  rename(
+    superclase           = superclass,
+    numero_elementos     = Count,
+    pb_enmascaradas      = bpMasked,
+    porcentaje_enmascarado = pct_masked
+  ) %>%
+  filter(superclase %in% c("LINE", "SINE", "LTR")) %>%
+  group_by(superclase) %>%
+  summarise(
+    numero_elementos       = sum(numero_elementos,       na.rm = TRUE),
+    pb_enmascaradas        = sum(pb_enmascaradas,        na.rm = TRUE),
+    porcentaje_enmascarado = sum(porcentaje_enmascarado, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pb_enmascaradas))
+
+datatable(
+  retroelementos_df,
+  options = list(scrollX = TRUE, autoWidth = TRUE)
+)
+```
+
+```{r grafico-retroelementos, echo=FALSE, warning=FALSE, fig.cap="Figura 2. Porcentaje de retrotransposones respecto a la longitud del genoma."}
+ggplot(
+  retroelementos_df,
+  aes(x = "", y = porcentaje_enmascarado, fill = superclase)
+) +
+  geom_col(position = position_stack(reverse = TRUE), width = 0.5) +
+  labs(
+    x       = "Retroelementos",
+    y       = "Porcentaje enmascarado (%)"
+  ) +
+  theme_minimal()
+```
+
+```{r texto-top-retroelemento, include=FALSE}
+# Extraer la superclase de retroelementos más abundante
+retro_top_df <- retroelementos_df %>%
+  slice_max(porcentaje_enmascarado, n = 1)
+
+retro_top_superclase    <- retro_top_df$superclase
+retro_top_pct           <- round(retro_top_df$porcentaje_enmascarado, 1)
+retro_top_bp            <- retro_top_df$pb_enmascaradas
+retro_top_bp_fmt        <- format(retro_top_bp, big.mark = " ", scientific = FALSE)
+```
+
+Dentro de los retrotransposones (o transposones de clase I), la
+categoría más abundante fue `r retro_top_superclase`, que representó el
+**`r retro_top_pct`** % del genoma enmascarado y ocupó aproximadamente
+**`r retro_top_bp_fmt`** bp.
+
+```{r grafico-familias-ltr, echo=FALSE, fig.cap="Figura 3. Porcentaje de LTRs respecto a la longitud del genoma."}
+# Filtrar las tres familias LTR del CSV (Copia, Gypsy, unknown)
+familias_ltr_df <- clases_te_df %>%
+  filter(te_class %in% c("LTR/Copia", "LTR/Gypsy", "LTR/unknown")) %>%
+  mutate(
+    familia_ltr = recode(
+      te_class,
+      "LTR/Copia"    = "Copia",
+      "LTR/Gypsy"    = "Gypsy",
+      "LTR/unknown"  = "Unknown"
+    )
+  ) %>%
+  rename(
+    superclase           = superclass,
+    numero_elementos     = Count,
+    porcentaje_enmascarado = pct_masked
+  )
+
+ggplot(
+  familias_ltr_df,
+  aes(x = "", y = porcentaje_enmascarado, fill = familia_ltr)
+) +
+  geom_col(position = position_stack(reverse = TRUE), width = 0.5) +
+  labs(
+    x       = "Elementos LTR",
+    y       = "Porcentaje enmascarado (%)",
+    fill    = NULL
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = colores_superfamilias)
+```
+
+```{r texto-ranking-ltr, include=FALSE}
+# Ordenar familias LTR por porcentaje enmascarado
+ranking_ltr_df <- familias_ltr_df %>%
+  arrange(desc(porcentaje_enmascarado))
+
+ltr_familia_1   <- ranking_ltr_df$familia_ltr[1]
+ltr_familia_2   <- ranking_ltr_df$familia_ltr[2]
+ltr_familia_3   <- ranking_ltr_df$familia_ltr[3]
+ltr_pct_1       <- round(ranking_ltr_df$porcentaje_enmascarado[1], 1)
+ltr_pct_2       <- round(ranking_ltr_df$porcentaje_enmascarado[2], 1)
+ltr_pct_3       <- round(ranking_ltr_df$porcentaje_enmascarado[3], 1)
+```
+
+Dentro de los elementos LTR, la mayor proporción corresponde a
+**`r ltr_familia_1` (`r ltr_pct_1` %)**, seguida de **`r ltr_familia_2`
+(`r ltr_pct_2` %)** y **`r ltr_familia_3` (`r ltr_pct_3` %)**.
+
+a.  Distribución cromosómica de los retrotransposones LTR.
+
+
+```{r grafico-ltr-por-cromosoma, echo=FALSE, warning=FALSE, fig.cap="Figura 4. Pares de bases ocupadas por retrotransposones LTR por cromosoma."}
+# Calcular bp ocupadas por LTR por cromosoma y tipo, añadir longitud del cromosoma
+ltr_por_cromosoma_df <- gff3_edta_df %>%
+  filter(type %in% c(
+    "Gypsy_LTR_retrotransposon",
+    "Copia_LTR_retrotransposon",
+    "LTR_retrotransposon"
+  )) %>%
+  group_by(seqnames, type) %>%
+  summarise(
+    bp_ocupadas = sum(end - start + 1),
+    .groups = "drop"
+  ) %>%
+  rename(nombre_chr = seqnames) %>%
+  left_join(
+    mapa_cromosomas_df %>% select(nombre_chr, longitud_bp),
+    by = "nombre_chr"
+  ) %>%
+  mutate(
+    familia_ltr  = recode(type,
+      "Gypsy_LTR_retrotransposon" = "Gypsy",
+      "Copia_LTR_retrotransposon" = "Copia",
+      "LTR_retrotransposon"       = "Unknown"
+    ),
+    etiqueta_chr = str_replace(nombre_chr, "Chr_", "Cromosoma_"),
+    etiqueta_chr = factor(etiqueta_chr, levels = paste0("Cromosoma_", 1:12))
+  )
+
+# Verificar que todos los cromosomas se han mapeado correctamente
+stopifnot(
+  "Hay cromosomas sin mapear en ltr_por_cromosoma_df" =
+    !any(is.na(ltr_por_cromosoma_df$etiqueta_chr))
+)
+
+# Factor de escala automático para el eje secundario
+factor_escala_ltr <- 6
+
+ggplot(ltr_por_cromosoma_df, aes(x = etiqueta_chr, y = bp_ocupadas, fill = familia_ltr)) +
+  geom_col(position = "dodge") +
+  geom_line(aes(y = longitud_bp / factor_escala_ltr, group = 1),
+            color = "goldenrod", linewidth = 1) +
+  scale_y_continuous(
+    name     = "Pares de bases ocupadas (bp)",
+    labels   = scales::scientific,
+    sec.axis = sec_axis(~ . * factor_escala_ltr, name = "Tamaño del cromosoma (pb)",
+                        labels = scales::scientific)
+  ) +
+  scale_fill_manual(values = colores_superfamilias) +
+  labs(x = NULL, fill = "Tipo") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+El gráfico muestra la distribución del número de retrotransposones LTR a
+lo largo de los distintos cromosomas del genoma analizado, diferenciando
+entre las superfamilias **Gypsy** y **Copia**. Además, se incluye una
+línea que representa el tamaño de cada cromosoma en pares de bases (pb).
+
+```{r texto-chr-max-min-ltr, include=FALSE}
+# Identificar cromosomas con mayor y menor bp ocupadas por LTR (sumando todos los tipos)
+totales_ltr_chr_df <- ltr_por_cromosoma_df %>%
+  group_by(etiqueta_chr) %>%
+  summarise(total_ltr = sum(bp_ocupadas), .groups = "drop")  # ← bp_ocupadas
+
+chr_max_ltr <- totales_ltr_chr_df$etiqueta_chr[which.max(totales_ltr_chr_df$total_ltr)]
+chr_min_ltr <- totales_ltr_chr_df$etiqueta_chr[which.min(totales_ltr_chr_df$total_ltr)]
+```
+
+El cromosoma con mayor número de LTR fue `r chr_max_ltr`, mientras que
+el menor número se observó en `r chr_min_ltr`.
+
+b.  Distribución cromosómica de la densidad de retrotransposones LTR y
+    genes.
+
+```{r grafico-kariotipo-ltr, echo=FALSE, message=FALSE, warning=FALSE}
+# Gráfico de cariotipo global: Gypsy (panel sup.) | Copia (panel sup.) | Genes (panel inf.)
+kariotipo_ltr <- plotKaryotype(genome = cromosomas_gr, plot.type = 2, labels = NULL)
+
+kpAddLabels(kariotipo_ltr,
+            labels        = seqlevels(cromosomas_gr),
+            label.margin  = 0.05,
+            cex           = 0.6)
+
+# Gypsy — panel superior
+kpPlotDensity(kariotipo_ltr, data = gypsy_gr,
+              col = alpha("#E74C3C", 0.4), border = "#922B21",
+              r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+kpAddLabels(kariotipo_ltr, labels = "Gypsy",
+            r0 = 0, r1 = 0, cex = 0.6, col = "#922B21")
+
+# Copia — panel superior (superpuesto)
+kpPlotDensity(kariotipo_ltr, data = copia_gr,
+              col = alpha("#3498DB", 0.4), border = "#1F618D",
+              r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+kpAddLabels(kariotipo_ltr, labels = "Copia",
+            r0 = 1, r1 = 1, cex = 0.6, col = "#1F618D")
+
+# Genes — panel inferior
+kpPlotDensity(kariotipo_ltr, data = genes_gr,
+              col = alpha("green", 0.4), border = "darkgreen",
+              r0 = 0, r1 = 1, data.panel = 2, window.size = 500000)
+kpAddLabels(kariotipo_ltr, labels = "Gen",
+            data.panel = 2, r0 = 0, r1 = 1, cex = 0.6, col = "darkgreen")
+```
+
+Figura 5. Distribución de la densidad de retrotransposones LTR (Gypsy en
+rojo, Copia en azul) y genes (verde) a lo largo de los cromosomas.
+
+La figura muestra la distribución de la densidad de elementos LTR a lo
+largo de cada uno de los cromosomas, diferenciando entre las
+superfamilias **Gypsy** (rojo), **Copia** (azul) y la densidad de
+**genes** (verde).
+
+Los LTR presentan una distribución heterogénea con picos localizados,
+mientras que los genes muestran un patrón más uniforme y, en algunas
+regiones, opuesto al de los elementos transponibles.
+
+- Densidad de LTR por cromosoma (gráfico individual):
+
+```{r graficos-ltr-cromosoma-individual, echo=FALSE, warning=FALSE}
+# Ordenar cromosomas numéricamente extrayendo el número del nombre
+nombres_cromosomas <- seqlevels(cromosomas_gr)
+nombres_cromosomas <- nombres_cromosomas[
+  order(as.integer(str_extract(nombres_cromosomas, "\\d+")))
+]
+
+for (chr_actual in nombres_cromosomas) {
+
+  gypsy_chr_gr  <- gypsy_gr[seqnames(gypsy_gr)  == chr_actual]
+  copia_chr_gr  <- copia_gr[seqnames(copia_gr)   == chr_actual]
+  genes_chr_gr  <- genes_gr[seqnames(genes_gr)   == chr_actual]
+
+  kp_chr <- plotKaryotype(
+    genome      = cromosomas_gr,
+    chromosomes = chr_actual,
+    plot.type   = 2,
+    labels      = NULL
+  )
+
+  kpAddLabels(kp_chr, labels = chr_actual, label.margin = 0.03, cex = 0.8)
+
+  kpPlotDensity(kp_chr, data = genes_chr_gr,
+                col = alpha("green", 0.4), border = "darkgreen",
+                r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+  kpAddLabels(kp_chr, labels = "Gen",
+              data.panel = 2, r0 = 0, r1 = 1, cex = 0.7, col = "darkgreen")
+
+  kpPlotDensity(kp_chr, data = gypsy_chr_gr,
+                col = alpha("#E74C3C", 0.4), border = "#922B21",
+                r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+  kpAddLabels(kp_chr, labels = "Gypsy",
+              r0 = 0, r1 = 0, cex = 0.7, col = "#922B21")
+
+  kpPlotDensity(kp_chr, data = copia_chr_gr,
+                col = alpha("#3498DB", 0.4), border = "#1F618D",
+                r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+  kpAddLabels(kp_chr, labels = "Copia",
+              r0 = 1, r1 = 1, cex = 0.7, col = "#1F618D")
+}
+```
+
+Figura 6. Densidad de retrotransposones LTR Gypsy (rojo), Copia (azul) y
+genes (verde) por cromosoma. Se muestra de manera individual la densidad
+de genes (verde) junto con la de los elementos LTR Gypsy (rojo) y Copia
+(azul) en cada cromosoma.
+
+c.  Clasificación por identidad del LTR.
+
+```{r grafico-identidad-ltr, echo=FALSE, warning=FALSE, fig.cap="Figura 7. Distribución de la identidad de los LTR."}
+# Filtrar LTR intactos y convertir identidad a numérico
+ltr_intactos_df <- gff3_edta_df %>%
+  filter(
+    type %in% c(
+      "Gypsy_LTR_retrotransposon",
+      "Copia_LTR_retrotransposon",
+      "LTR_retrotransposon"
+    ),
+    method == "structural"   # Solo elementos intactos con ltr_identity real
+  ) %>%
+  select(-score, -phase) %>%
+  mutate(ltr_identity = as.numeric(ltr_identity)) %>%
+  filter(!is.na(ltr_identity))  # Eliminar NAs residuales
+
+ggplot(ltr_intactos_df, aes(x = ltr_identity)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black") +
+  labs(
+    x       = "Identidad de los LTR",
+    y       = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+```{r texto-identidad-ltr, include=FALSE}
+# Estadísticos de identidad LTR para texto inline
+identidad_min    <- round(min(ltr_intactos_df$ltr_identity,  na.rm = TRUE), 3)
+identidad_max    <- round(max(ltr_intactos_df$ltr_identity,  na.rm = TRUE), 3)
+identidad_media  <- round(mean(ltr_intactos_df$ltr_identity, na.rm = TRUE), 3)
+identidad_mediana <- round(median(ltr_intactos_df$ltr_identity, na.rm = TRUE), 3)
+```
+
+La figura muestra la distribución de la identidad entre los LTRs
+flanqueantes de los retrotransposones LTR intactos, que oscila entre
+**`r identidad_min`** y **`r identidad_max`**, con una media de
+**`r identidad_media`** y una mediana de **`r identidad_mediana`**.
+
+d.  Edad de los LTR.
+
+```{r calcular-edad-ltr, echo=FALSE}
+# -------------------------------------------------------
+# CÁLCULO DE LA EDAD DE INSERCIÓN DE LOS LTR
+# Fórmula: edad = (1 - identidad) / (2 × tasa_mutacion)
+# Tasa de mutación para plantas (Ossowski et al. 2010): 2.29 × 10⁻⁹
+# -------------------------------------------------------
+tasa_mutacion_ltr <- 2.29e-9
+
+ltr_con_edad_df <- ltr_intactos_df %>%
+  mutate(
+    edad_anios = (1 - ltr_identity) / (2 * tasa_mutacion_ltr),
+    edad_mya   = edad_anios / 1e6
+  )
+
+# Crear intervalos de 50 mya de forma dinámica
+paso_mya   <- 50
+max_edad   <- max(ltr_con_edad_df$edad_mya, na.rm = TRUE)
+cortes_mya <- seq(0, ceiling(max_edad / paso_mya) * paso_mya, by = paso_mya)
+
+ltr_con_edad_intervalos_df <- ltr_con_edad_df %>%
+  mutate(
+    intervalo_factor = cut(
+      edad_mya,
+      breaks         = cortes_mya,
+      include.lowest = TRUE,
+      right          = FALSE,
+      dig.lab        = 10
+    ),
+    # Formatear etiqueta del intervalo: "[0,50)" → "0-50 mya"
+    intervalo_edad = gsub("\\[|\\]|\\(|\\)", "", as.character(intervalo_factor)),
+    intervalo_edad = gsub(",", "-", intervalo_edad),
+    intervalo_edad = paste0(intervalo_edad, " mya"),
+    intervalo_edad = factor(intervalo_edad, levels = unique(intervalo_edad[order(edad_mya)]))
+  ) %>%
+  # Crear identificador único por posición genómica
+  mutate(id_ltr = paste(seqnames, start, end, sep = "_"))
+
+# Eliminar duplicados (si los hubiera) conservando la primera ocurrencia
+n_duplicados_ltr <- sum(duplicated(ltr_con_edad_intervalos_df$id_ltr))
+if (n_duplicados_ltr > 0) {
+  message(sprintf("Se encontraron %d IDs duplicados en LTR. Se conserva la primera ocurrencia.", n_duplicados_ltr))
+  ltr_con_edad_intervalos_df <- ltr_con_edad_intervalos_df %>%
+    distinct(id_ltr, .keep_all = TRUE)
+}
+```
+
+```{r grafico-edad-ltr-barras, echo=FALSE, warning=FALSE, fig.cap="Figura 8. Distribución de edad de las superfamilias de LTRs."}
+# Gráfico de barras: número de LTR por intervalo de edad y clasificación
+ltr_edad_filtrado_df <- ltr_con_edad_intervalos_df %>%
+  filter(!is.na(ltr_identity)) %>%
+  select(type, classification, ltr_identity, edad_mya, intervalo_edad) %>%
+  arrange(desc(ltr_identity)) %>%
+  mutate(
+    familia_ltr = recode(classification,
+      "LTR/Gypsy"    = "Gypsy",
+      "LTR/Copia"    = "Copia",
+      "LTR/unknown"  = "Unknown"
+    )
+  )
+
+ggplot(ltr_edad_filtrado_df, aes(x = intervalo_edad, fill = familia_ltr)) +
+  geom_bar(width = 0.5) +
+  scale_fill_manual(values = colores_superfamilias) +
+  labs(
+    y    = "Número de elementos",
+    x    = "Intervalo de edad"
+  ) +
+  theme_minimal()
+```
+
+```{r texto-resumen-edad-ltr, include=FALSE}
+# Totales por intervalo de edad
+totales_por_intervalo_df <- ltr_con_edad_intervalos_df %>%
+  count(intervalo_edad, name = "total_elementos")
+
+intervalo_mas_abundante      <- totales_por_intervalo_df$intervalo_edad[which.max(totales_por_intervalo_df$total_elementos)]
+n_intervalo_mas_abundante    <- totales_por_intervalo_df$total_elementos[which.max(totales_por_intervalo_df$total_elementos)]
+n_intervalo_mas_abundante_fmt <- format(n_intervalo_mas_abundante, big.mark = " ", scientific = FALSE)
+
+intervalo_menos_abundante    <- totales_por_intervalo_df$intervalo_edad[which.min(totales_por_intervalo_df$total_elementos)]
+n_intervalo_menos_abundante  <- totales_por_intervalo_df$total_elementos[which.min(totales_por_intervalo_df$total_elementos)]
+n_intervalo_menos_abundante_fmt <- format(n_intervalo_menos_abundante, big.mark = " ", scientific = FALSE)
+```
+
+La figura muestra la distribución de la edad de los retrotransposones
+LTR expresada en millones de años.
+
+**`r n_intervalo_menos_abundante_fmt`** elementos LTR se encuentran en
+el intervalo de edad de **`r intervalo_menos_abundante`**.
+
+```{r grafico-edad-ltr-densidad, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 9. Distribución de la edad de LTR retrotransposones."}
+# Histograma + curva de densidad para Gypsy y Copia (excluye Unknown)
+ltr_gypsy_copia_df <- ltr_con_edad_intervalos_df %>%
+  filter(type %in% c("Gypsy_LTR_retrotransposon", "Copia_LTR_retrotransposon")) %>%
+  mutate(
+    familia_ltr = recode(type,
+      "Gypsy_LTR_retrotransposon" = "Gypsy",
+      "Copia_LTR_retrotransposon" = "Copia"
+    )
+  )
+
+ggplot(ltr_gypsy_copia_df, aes(x = edad_mya, fill = familia_ltr)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, alpha = 0.6, position = "identity") +
+  geom_density(aes(color = familia_ltr), alpha = 0.4) +
+  scale_fill_manual(values  = colores_superfamilias) +
+  scale_color_manual(values = colores_superfamilias) +
+  labs(
+    x     = "Edad (millones de años)",
+    y     = "Densidad",
+    fill  = NULL,
+    color = NULL
+  ) +
+  xlim(0, 50) +
+  theme_minimal()
+```
+
+```{r texto-resumen-edad-densidad, include=FALSE}
+# Estadísticos descriptivos de edad para Gypsy y Copia
+edad_media_gypsy_mya <- round(
+  mean(ltr_gypsy_copia_df$edad_mya[ltr_gypsy_copia_df$type == "Gypsy_LTR_retrotransposon"], na.rm = TRUE), 1
+)
+edad_media_copia_mya <- round(
+  mean(ltr_gypsy_copia_df$edad_mya[ltr_gypsy_copia_df$type == "Copia_LTR_retrotransposon"], na.rm = TRUE), 1
+)
+
+edad_maxima_mya <- round(max(ltr_gypsy_copia_df$edad_mya, na.rm = TRUE), 1)
+```
+
+La figura muestra la distribución de la edad de los retrotransposones
+LTR de las superfamilias Gypsy y Copia, representada mediante
+histogramas y curvas de densidad.
+
+La edad media de los elementos es de **`r edad_media_gypsy_mya` mya** en
+Gypsy y **`r edad_media_copia_mya` mya** en Copia, lo que indica una
+ligera diferencia en la dinámica temporal entre ambas superfamilias.
+
+Además, se detecta una disminución progresiva en la frecuencia de
+elementos a medida que aumenta la edad, aunque existen algunos elementos
+más antiguos que alcanzan hasta aproximadamente **`r edad_maxima_mya`
+millones de años**, lo que sugiere la persistencia de inserciones
+antiguas en el genoma.
+
+e.  Distancia al gen más cercano.
+
+```{r calcular-distancias-ltr-gen, warning=FALSE, include=FALSE}
+# -------------------------------------------------------
+# DISTANCIA DE CADA LTR AL GEN MÁS CERCANO
+# -------------------------------------------------------
+
+# Calcular distancias para Gypsy y Copia
+distancias_gypsy_hits  <- distanceToNearest(gypsy_gr, genes_gr, ignore.strand = TRUE)
+distancias_copia_hits  <- distanceToNearest(copia_gr, genes_gr, ignore.strand = TRUE)
+
+# Construir data frames con distancias, añadir ID único y eliminar duplicados
+
+construir_df_distancias <- function(ltr_gr, hits, nombre_tipo) {
+  ltr_df  <- as.data.frame(ltr_gr)
+  hits_df <- data.frame(
+    tipo_ltr      = nombre_tipo,
+    distancia_gen = mcols(hits)$distance
+  )
+  resultado_df <- cbind(ltr_df, hits_df) %>%
+    mutate(id_ltr = paste(seqnames, start, end, sep = "_"))
+
+  n_dup <- sum(duplicated(resultado_df$id_ltr))
+  if (n_dup > 0) {
+    warning(sprintf("Se encontraron %d IDs duplicados en %s. Se conserva la primera ocurrencia.", n_dup, nombre_tipo))
+    resultado_df <- resultado_df %>% distinct(id_ltr, .keep_all = TRUE)
+  }
+  resultado_df
+}
+
+gypsy_distancias_df <- construir_df_distancias(gypsy_gr, distancias_gypsy_hits, "Gypsy")
+copia_distancias_df <- construir_df_distancias(copia_gr, distancias_copia_hits, "Copia")
+
+# Unir ambos data frames
+distancias_ltr_gen_df <- bind_rows(gypsy_distancias_df, copia_distancias_df)
+```
+
+```{r tabla-resumen-distancias, echo=FALSE, warning=FALSE, paged.print=TRUE}
+distancias_ltr_gen_df %>%
+  group_by(tipo_ltr) %>%
+  summarise(
+    numero_elementos      = n(),
+    distancia_media_bp    = mean(distancia_gen,   na.rm = TRUE),
+    distancia_mediana_bp  = median(distancia_gen, na.rm = TRUE),
+    desviacion_estandar   = sd(distancia_gen,     na.rm = TRUE),
+    distancia_minima_bp   = min(distancia_gen,    na.rm = TRUE),
+    distancia_maxima_bp   = max(distancia_gen,    na.rm = TRUE)
+  ) %>%
+  datatable(
+    options  = list(pageLength = 5, scrollX = TRUE, autoWidth = TRUE),
+    rownames = FALSE
+  )
+```
+
+```{r resumen-distancias-inline, echo=FALSE}
+resumen_distancias <- distancias_ltr_gen_df %>%
+  group_by(tipo_ltr) %>%
+  summarise(
+    numero_elementos      = n(),
+    distancia_media_bp    = mean(distancia_gen, na.rm = TRUE),
+    distancia_mediana_bp  = median(distancia_gen, na.rm = TRUE),
+    desviacion_estandar   = sd(distancia_gen, na.rm = TRUE),
+    distancia_minima_bp   = min(distancia_gen, na.rm = TRUE),
+    distancia_maxima_bp   = max(distancia_gen, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ltr_mas_cercano <- resumen_distancias %>%
+  slice_min(distancia_mediana_bp, n = 1, with_ties = FALSE)
+```
+
+La tabla muestra un resumen de las distancias entre los elementos LTR y
+los genes, agrupadas por tipo de LTR. Para cada grupo se indica el
+número de elementos analizados, la distancia media, la mediana, la
+desviación estándar y los valores mínimo y máximo observados. De acuerdo
+con la distancia mediana, los elementos **`r ltr_mas_cercano$tipo_ltr`**
+son los que se encuentran más próximos a los genes, con una distancia
+mediana de
+**`r format(ltr_mas_cercano$distancia_mediana_bp, big.mark = ",")` bp**.
+
+```{r grafico-boxplot-distancias, echo=FALSE, warning=FALSE, fig.cap="Figura 10. Distancia de LTR al gen más cercano."}
+ggplot(distancias_ltr_gen_df, aes(x = tipo_ltr, y = distancia_gen, fill = tipo_ltr)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10() +
+  scale_fill_manual(values = colores_superfamilias) +  # ← values con s
+  labs(
+    x    = "Tipo de LTR",
+    y    = "Distancia al gen más cercano (bp, escala log10)",
+    fill = NULL
+  ) +
+  theme_minimal()
+```
+
+```{r texto-resumen-distancias, include=FALSE}
+resumen_distancias_df <- distancias_ltr_gen_df %>%
+  group_by(tipo_ltr) %>%
+  summarise(
+    media   = mean(distancia_gen,   na.rm = TRUE),
+    mediana = median(distancia_gen, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+media_gypsy_bp   <- round(resumen_distancias_df$media[resumen_distancias_df$tipo_ltr == "Gypsy"],   0)
+media_copia_bp   <- round(resumen_distancias_df$media[resumen_distancias_df$tipo_ltr == "Copia"],   0)
+mediana_gypsy_bp <- round(resumen_distancias_df$mediana[resumen_distancias_df$tipo_ltr == "Gypsy"], 0)
+mediana_copia_bp <- round(resumen_distancias_df$mediana[resumen_distancias_df$tipo_ltr == "Copia"], 0)
+
+tipo_mas_cercano_gen <- if_else(media_gypsy_bp < media_copia_bp, "Gypsy", "Copia")
+diferencia_media_bp  <- abs(media_copia_bp - media_gypsy_bp)
+diferencia_media_fmt <- format(diferencia_media_bp, big.mark = " ", scientific = FALSE)
+```
+
+La figura muestra la distribución de las distancias al gen más cercano
+para los retrotransposones LTR de las superfamilias Gypsy y Copia en
+escala logarítmica.
+
+Los elementos **Copia** presentan una distancia media al gen más cercano
+de aproximadamente `r format(media_copia_bp, big.mark = " ")` bp
+(mediana = `r format(mediana_copia_bp, big.mark = " ")` bp), mientras
+que los elementos **Gypsy** presentan una distancia media de
+`r format(media_gypsy_bp, big.mark = " ")` bp y una mediana de
+`r format(mediana_gypsy_bp, big.mark = " ")` bp.
+
+Estos resultados muestran que los elementos **`r tipo_mas_cercano_gen`**
+presentan, en promedio, menores distancias a genes, con una diferencia
+aproximada de `r diferencia_media_fmt` bp en la distancia media respecto
+a la otra superfamilia.
+
+```{r grafico-densidad-distancias, echo=FALSE, warning=FALSE, fig.cap="Figura 11. Distribución de distancias de LTR a genes."}
+ggplot(distancias_ltr_gen_df,
+       aes(x = distancia_gen, fill = tipo_ltr, color = tipo_ltr)) +
+  geom_density(alpha = 0.3) +
+  scale_x_log10() +
+  labs(
+    x       = "Distancia al gen más cercano (bp, escala log10)",
+    y       = "Densidad"
+  ) +
+  theme_minimal() +
+  scale_fill_manual( values = colores_superfamilias) + 
+  scale_color_manual( values = colores_superfamilias)
+```
+
+```{r texto-resumen-densidad-distancias, include=FALSE}
+# Pico (moda) de la distribución de densidad para cada superfamilia
+# Calculado sobre log10 para ser coherente con la escala del gráfico
+dens_gypsy_dist <- density(
+  log10(distancias_ltr_gen_df$distancia_gen[distancias_ltr_gen_df$tipo_ltr == "Gypsy"] + 1),
+  na.rm = TRUE
+)
+dens_copia_dist <- density(
+  log10(distancias_ltr_gen_df$distancia_gen[distancias_ltr_gen_df$tipo_ltr == "Copia"] + 1),
+  na.rm = TRUE
+)
+
+pico_densidad_gypsy_bp <- round(10^dens_gypsy_dist$x[which.max(dens_gypsy_dist$y)], 0)
+pico_densidad_copia_bp <- round(10^dens_copia_dist$x[which.max(dens_copia_dist$y)], 0)
+```
+
+La figura muestra la distribución de las distancias al gen más cercano
+para las superfamilias Gypsy y Copia mediante curvas de densidad en
+escala logarítmica.
+
+Se observa que ambas distribuciones presentan una forma unimodal, con
+máximos de densidad situados aproximadamente en
+**`r format(pico_densidad_gypsy_bp, big.mark = " ")` bp** para Gypsy y
+**`r format(pico_densidad_copia_bp, big.mark = " ")` bp** para Copia.
+
+En términos generales, los elementos **`r tipo_mas_cercano_gen`**
+tienden a localizarse más próximos a los genes, mientras que los de la
+otra superfamilia muestran una ligera tendencia a situarse a mayores
+distancias.
+
+```{r prueba-wilcoxon-distancias, echo=FALSE, fig.cap="Resultado del test de Wilcoxon para la distancia al gen más cercano entre Gypsy y Copia."}
+wilcox_dist <- wilcox.test(
+  distancia_gen ~ tipo_ltr,
+  data = distancias_ltr_gen_df
+)
+
+wilcox_dist
+```
+
+Los resultados de la prueba de Wilcoxon indican que
+`r if (wilcox_dist$p.value < 0.05) "existen diferencias significativas" else "no existen diferencias significativas"`
+en la distancia al gen más cercano entre los elementos Gypsy y Copia (p
+=
+`r format.pval(wilcox_dist$p.value, digits = 3, eps = .Machine$double.eps)`).
+
+```{r calcular-solapamientos-gen, include=FALSE}
+# -------------------------------------------------------
+# SOLAPAMIENTO DE LTR CON GENES
+# -------------------------------------------------------
+solapamientos_gypsy <- countOverlaps(gypsy_gr, genes_gr, ignore.strand = TRUE)
+solapamientos_copia <- countOverlaps(copia_gr, genes_gr, ignore.strand = TRUE)
+
+solapamiento_df <- data.frame(
+  tipo_ltr   = c("Gypsy", "Copia"),
+  total      = c(length(solapamientos_gypsy), length(solapamientos_copia)),
+  solapan_gen = c(
+    sum(solapamientos_gypsy > 0),
+    sum(solapamientos_copia > 0)
+  )
+) %>%
+  mutate(porcentaje_solapamiento = (solapan_gen / total) * 100)
+```
+
+```{r grafico-solapamiento-gen, echo=FALSE, warning=FALSE, fig.cap="Figura 12. Porcentaje de LTR que solapan genes."}
+ggplot(solapamiento_df, aes(x = tipo_ltr, y = porcentaje_solapamiento, fill = tipo_ltr)) +
+  geom_col(width = 0.6) +
+  labs(
+    x       = "Tipo de LTR",
+    y       = "Porcentaje que solapa genes (%)"
+  ) +
+  theme_minimal() +
+  scale_fill_manual( values = colores_superfamilias)
+```
+
+```{r texto-solapamiento, include=FALSE}
+pct_solapamiento_copia <- round(
+  solapamiento_df$porcentaje_solapamiento[solapamiento_df$tipo_ltr == "Copia"], 1
+)
+pct_solapamiento_gypsy <- round(
+  solapamiento_df$porcentaje_solapamiento[solapamiento_df$tipo_ltr == "Gypsy"], 1
+)
+tipo_mayor_solapamiento <- if_else(pct_solapamiento_copia > pct_solapamiento_gypsy, "Copia", "Gypsy")
+```
+
+Los elementos Copia presentan un solapamiento del
+`r pct_solapamiento_copia` %, mientras que los elementos Gypsy alcanzan
+un `r pct_solapamiento_gypsy` %. En conjunto, la superfamilia
+**`r tipo_mayor_solapamiento`** muestra una mayor tendencia a
+localizarse en regiones génicas.
+
+```{r calcular-categorias-distancia, warning=FALSE, include=FALSE}
+# Clasificar los LTR por categoría de distancia al gen más cercano
+distancias_categorizadas_df <- distancias_ltr_gen_df %>%
+  mutate(
+    categoria_distancia = case_when(
+      distancia_gen == 0              ~ "Dentro/Solapando gen",
+      distancia_gen <= 2000           ~ "<= 2 kb",
+      distancia_gen <= 10000          ~ "2-10 kb",
+      distancia_gen <= 50000          ~ "10-50 kb",
+      TRUE                            ~ "> 50 kb"
+    ),
+    categoria_distancia = factor(
+      categoria_distancia,
+      levels = c("Dentro/Solapando gen", "<= 2 kb", "2-10 kb", "10-50 kb", "> 50 kb")
+    )
+  )
+
+tabla_categorias_distancia_df <- distancias_categorizadas_df %>%
+  group_by(tipo_ltr, categoria_distancia) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(tipo_ltr) %>%
+  mutate(porcentaje = 100 * n / sum(n)) %>%
+  arrange(tipo_ltr, categoria_distancia)
+```
+
+```{r grafico-categorias-distancia, echo=FALSE, fig.cap="Figura 13. Distribución de LTR según la distancia al gen."}
+ggplot(
+  tabla_categorias_distancia_df,
+  aes(x = categoria_distancia, y = porcentaje, fill = tipo_ltr)
+) +
+  geom_col(position = "fill") +
+  labs(
+    x       = "Categoría de distancia al gen",
+    y       = "Proporción",
+    fill    = "Tipo de LTR"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = colores_superfamilias)
+```
+
+```{r texto-categorias-distancia, include=FALSE}
+cat_mas_cercana <- levels(tabla_categorias_distancia_df$categoria_distancia)[1]
+cat_mas_lejana  <- levels(tabla_categorias_distancia_df$categoria_distancia)[
+  nlevels(tabla_categorias_distancia_df$categoria_distancia)
+]
+
+pct_gypsy_cercana <- round(
+  tabla_categorias_distancia_df$porcentaje[
+    tabla_categorias_distancia_df$tipo_ltr == "Gypsy" &
+    tabla_categorias_distancia_df$categoria_distancia == cat_mas_cercana
+  ], 1
+)
+pct_copia_lejana <- round(
+  tabla_categorias_distancia_df$porcentaje[
+    tabla_categorias_distancia_df$tipo_ltr == "Copia" &
+    tabla_categorias_distancia_df$categoria_distancia == cat_mas_lejana
+  ], 1
+)
+```
+
+En la categoría más cercana a los genes (`r cat_mas_cercana`), los
+elementos Gypsy son más abundantes (\~`r pct_gypsy_cercana` %). En
+contraste, en las regiones más alejadas (`r cat_mas_lejana`), los
+elementos Copia predominan (\~`r pct_copia_lejana` %). Este patrón
+indica una distribución diferencial entre ambas superfamilias en función
+de la distancia a los genes.
+
+```{r grafico-violin-edad-distancia, echo=FALSE, warning=FALSE, fig.cap="Figura 14. Distribución de la edad de los LTR jóvenes según la distancia al gen."}
+# Combinar datos de edad e intervalos de distancia para Gypsy y Copia
+ltr_edad_sin_unknown_df <- ltr_con_edad_intervalos_df %>%
+  filter(classification != "LTR/unknown")
+
+tabla_id_distancia_df <- distancias_categorizadas_df %>%
+  select(id_ltr, distancia_gen, categoria_distancia, tipo_ltr)
+
+violin_edad_distancia_df <- left_join(
+  ltr_edad_sin_unknown_df,
+  tabla_id_distancia_df,
+  by = "id_ltr"
+) %>%
+  distinct(id_ltr, .keep_all = TRUE) %>%
+  mutate(
+    categoria_distancia = factor(
+      categoria_distancia,
+      levels = c("Dentro/Solapando gen", "<= 2 kb", "2-10 kb", "10-50 kb", "> 50 kb")
+    )
+  ) %>%
+  arrange(categoria_distancia)
+
+# Filtrar LTR jóvenes (≤ 40 mya) para mejorar la visualización
+violin_ltr_jovenes_df <- violin_edad_distancia_df %>%
+  filter(edad_mya <= 40)
+
+ggplot(violin_ltr_jovenes_df,
+       aes(x = categoria_distancia, y = edad_mya, fill = tipo_ltr)) +
+  geom_violin(position = position_dodge(width = 0.8), alpha = 0.5, trim = FALSE) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.15, outlier.alpha = 0.2) +
+  labs(
+    x       = "Categoría de distancia al gen",
+    y       = "Edad del LTR (mya)",
+    fill    = "Tipo de LTR"
+  ) +
+  theme_minimal() + 
+  scale_fill_manual( values = colores_superfamilias)
+```
+
+Distribución de la edad de los LTR según su distancia al gen más
+cercano. Las gráficas de violín muestran la densidad de distribución y
+los diagramas de caja indican la mediana y el rango intercuartílico para
+las superfamilias Copia y Gypsy.
+
+```{r distribucion-tamanos-ltr, include=FALSE}
+# -------------------------------------------------------
+# DISTRIBUCIÓN DE TAMAÑOS DE LTR INTACTOS Y FRAGMENTOS
+# -------------------------------------------------------
+
+# Elementos intactos (anotados por estructura)
+ltr_intactos_tamano_df <- gff3_edta_df %>%
+  filter(
+    type %in% c("Gypsy_LTR_retrotransposon", "Copia_LTR_retrotransposon"),
+    method == "structural"
+  ) %>%
+  mutate(
+    longitud_bp  = end - start + 1,
+    superfamilia = if_else(type == "Gypsy_LTR_retrotransposon", "Gypsy", "Copia")
+  )
+
+# Elementos no intactos (anotados por homología, es decir fragmentos)
+ltr_fragmentos_tamano_df <- gff3_edta_df %>%
+  filter(
+    type %in% c("Gypsy_LTR_retrotransposon", "Copia_LTR_retrotransposon"),
+    method == "homology"
+  ) %>%
+  mutate(
+    longitud_bp  = end - start + 1,
+    superfamilia = if_else(type == "Gypsy_LTR_retrotransposon", "Gypsy", "Copia")
+  )
+
+# Estadísticos descriptivos para texto inline
+resumen_intactos_df <- ltr_intactos_tamano_df %>%
+  group_by(superfamilia) %>%
+  summarise(
+    n          = n(),
+    mediana_bp = median(longitud_bp, na.rm = TRUE),
+    media_bp   = round(mean(longitud_bp, na.rm = TRUE), 0),
+    max_bp     = max(longitud_bp, na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+resumen_fragmentos_df <- ltr_fragmentos_tamano_df %>%
+  group_by(superfamilia) %>%
+  summarise(
+    n          = n(),
+    mediana_bp = median(longitud_bp, na.rm = TRUE),
+    media_bp   = round(mean(longitud_bp, na.rm = TRUE), 0),
+    max_bp     = max(longitud_bp, na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+# Extraer valores para texto inline
+mediana_intactos_gypsy <- resumen_intactos_df$mediana_bp[resumen_intactos_df$superfamilia == "Gypsy"]
+mediana_intactos_copia <- resumen_intactos_df$mediana_bp[resumen_intactos_df$superfamilia == "Copia"]
+mediana_fragm_gypsy    <- resumen_fragmentos_df$mediana_bp[resumen_fragmentos_df$superfamilia == "Gypsy"]
+mediana_fragm_copia    <- resumen_fragmentos_df$mediana_bp[resumen_fragmentos_df$superfamilia == "Copia"]
+
+n_intactos_gypsy <- format(resumen_intactos_df$n[resumen_intactos_df$superfamilia == "Gypsy"],
+                            big.mark = " ", scientific = FALSE)
+n_intactos_copia <- format(resumen_intactos_df$n[resumen_intactos_df$superfamilia == "Copia"],
+                            big.mark = " ", scientific = FALSE)
+n_fragm_gypsy    <- format(resumen_fragmentos_df$n[resumen_fragmentos_df$superfamilia == "Gypsy"],
+                            big.mark = " ", scientific = FALSE)
+n_fragm_copia    <- format(resumen_fragmentos_df$n[resumen_fragmentos_df$superfamilia == "Copia"],
+                            big.mark = " ", scientific = FALSE)
+```
+
+```{r grafico-tamanos-ltr-intactos, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 15. Distribución de tamaños de LTR retrotransposones intactos."}
+# Gráfico de distribución de tamaños de elementos intactos
+ggplot(ltr_intactos_tamano_df, aes(x = longitud_bp, fill = superfamilia)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, alpha = 0.6, position = "identity") +
+  geom_density(alpha = 0.3) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(
+    x       = "Longitud (bp)",
+    y       = "Densidad"
+  ) +
+  theme_minimal() +
+  scale_fill_manual( values = colores_superfamilias)
+```
+
+```{r grafico-tamanos-ltr-fragmentos, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 16. Distribución de tamaños de fragmentos de LTR retrotransposones."}
+# Gráfico de distribución de tamaños de fragmentos
+ggplot(ltr_fragmentos_tamano_df, aes(x = longitud_bp, fill = superfamilia)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, alpha = 0.6, position = "identity") +
+  geom_density(alpha = 0.3) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(
+    x       = "Longitud (bp)",
+    y       = "Densidad"
+  ) +
+  theme_minimal() +
+  scale_fill_manual( values = colores_superfamilias)
+```
+
+Los elementos LTR intactos (anotados por estructura) presentan tamaños
+considerablemente mayores que sus fragmentos. En el caso de los
+elementos **Gypsy** intactos (n = `r n_intactos_gypsy`), la longitud
+mediana es de **`r format(mediana_intactos_gypsy, big.mark = " ")` bp**,
+mientras que para los elementos **Copia** intactos (n =
+`r n_intactos_copia`) es de
+**`r format(mediana_intactos_copia, big.mark = " ")` bp**.
+
+En contraste, los fragmentos presentan longitudes notablemente
+inferiores, con medianas de
+**`r format(mediana_fragm_gypsy, big.mark = " ")` bp** para Gypsy (n =
+`r n_fragm_gypsy`) y **`r format(mediana_fragm_copia, big.mark = " ")`
+bp** para Copia (n = `r n_fragm_copia`), lo que refleja la degradación
+progresiva de estos elementos a lo largo del tiempo evolutivo.
+
+f.  Correlación entre densidad de LTR y densidad génica por ventanas
+    genómicas.
+
+```{r ventanas-deslizantes-densidad, include=FALSE}
+# -------------------------------------------------------
+# ANÁLISIS DE VENTANAS GENÓMICAS DESLIZANTES (1 Mb)
+# Objetivo: correlacionar la densidad de LTR Gypsy y Copia
+# con la densidad génica a lo largo del genoma.
+# -------------------------------------------------------
+
+# 1. Construir el vector de longitudes cromosómicas con nombre
+#    (Chr_1 ... Chr_12) a partir del mapa de cromosomas
+longitudes_cromosomas <- setNames(
+  mapa_cromosomas_df$longitud_bp,
+  mapa_cromosomas_df$nombre_chr
+)
+
+# 2. Crear ventanas de 1 Mb sobre el genoma completo
+tamano_ventana_bp <- 1e6
+
+ventanas_gr <- tileGenome(
+  seqlengths = longitudes_cromosomas,
+  tilewidth  = tamano_ventana_bp,
+  cut.last.tile.in.chrom = TRUE
+)
+# 3. Contar elementos en cada ventana
+n_gypsy_por_ventana  <- countOverlaps(ventanas_gr, gypsy_gr,  ignore.strand = TRUE)
+n_copia_por_ventana  <- countOverlaps(ventanas_gr, copia_gr,  ignore.strand = TRUE)
+n_genes_por_ventana  <- countOverlaps(ventanas_gr, genes_gr,  ignore.strand = TRUE)
+
+# 4. Calcular la longitud real de cada ventana (en Mb) y obtener densidades
+ventanas_densidad_df <- data.frame(
+  cromosoma       = as.character(seqnames(ventanas_gr)),
+  inicio          = start(ventanas_gr),
+  fin             = end(ventanas_gr),
+  longitud_mb     = width(ventanas_gr) / 1e6,
+  n_gypsy         = n_gypsy_por_ventana,
+  n_copia         = n_copia_por_ventana,
+  n_genes         = n_genes_por_ventana
+) %>%
+  mutate(
+    densidad_gypsy_por_mb = n_gypsy / longitud_mb,
+    densidad_copia_por_mb = n_copia / longitud_mb,
+    densidad_genes_por_mb = n_genes / longitud_mb
+  )
+
+# 5. Correlación de Spearman: Gypsy ~ genes
+corr_gypsy_genes <- cor.test(
+  ventanas_densidad_df$densidad_gypsy_por_mb,
+  ventanas_densidad_df$densidad_genes_por_mb,
+  method = "spearman",
+  exact  = FALSE
+)
+
+# 6. Correlación de Spearman: Copia ~ genes
+corr_copia_genes <- cor.test(
+  ventanas_densidad_df$densidad_copia_por_mb,
+  ventanas_densidad_df$densidad_genes_por_mb,
+  method = "spearman",
+  exact  = FALSE
+)
+
+# Extraer estadísticos para el texto inline
+rho_gypsy   <- round(corr_gypsy_genes$estimate, 3)
+pval_gypsy  <- corr_gypsy_genes$p.value
+rho_copia   <- round(corr_copia_genes$estimate, 3)
+pval_copia  <- corr_copia_genes$p.value
+
+formatear_pval <- function(p) {
+  if (p < 0.001) formatC(p, format = "e", digits = 2) else round(p, 3)
+}
+pval_gypsy_fmt <- formatear_pval(pval_gypsy)
+pval_copia_fmt <- formatear_pval(pval_copia)
+
+direccion_gypsy <- if_else(rho_gypsy > 0, "positiva", "negativa")
+direccion_copia <- if_else(rho_copia > 0, "positiva", "negativa")
+```
+
+```{r grafico-correlacion-densidad-ltr-genes, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 17. Correlación entre densidad de LTR y densidad génica (ventanas de 1 Mb)."}
+ventanas_largo_df <- ventanas_densidad_df %>%
+  select(cromosoma, densidad_genes_por_mb,
+         densidad_gypsy_por_mb, densidad_copia_por_mb) %>%
+  tidyr::pivot_longer(
+    cols      = c(densidad_gypsy_por_mb, densidad_copia_por_mb),
+    names_to  = "superfamilia",
+    values_to = "densidad_ltr_por_mb"
+  ) %>%
+  mutate(
+    superfamilia = recode(superfamilia,
+      "densidad_gypsy_por_mb" = "Gypsy",
+      "densidad_copia_por_mb" = "Copia"
+    )
+  )
+
+etiquetas_corr_df <- data.frame(
+  superfamilia = c("Gypsy", "Copia"),
+  etiqueta     = c(
+    sprintf("ρ = %.3f\np = %s", rho_gypsy, pval_gypsy_fmt),
+    sprintf("ρ = %.3f\np = %s", rho_copia, pval_copia_fmt)
+  )
+)
+
+ggplot(ventanas_largo_df,
+       aes(x = densidad_genes_por_mb, y = densidad_ltr_por_mb, color = superfamilia)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.8, color = "black") +
+  geom_text(
+    data        = etiquetas_corr_df,
+    aes(label   = etiqueta),
+    x           = Inf, y = Inf,
+    hjust       = 1.1, vjust = 1.4,
+    size        = 3.2,
+    color       = "black",
+    inherit.aes = FALSE
+  ) +
+  scale_color_manual(values = colores_superfamilias) +  # ← color, no fill
+  facet_wrap(~ superfamilia, scales = "free_y") +
+  coord_cartesian(ylim = c(0, 350)) +
+  labs(
+    x     = "Densidad génica (genes / Mb)",
+    y     = "Densidad de LTR (elementos / Mb)",
+    color = NULL
+  ) +
+  theme_minimal()
+```
+
+Para evaluar si la distribución de los retrotransposones LTR guarda
+relación con la organización génica del genoma, se realizó un análisis
+de ventanas genómicas de **1 Mb**. En cada ventana se calculó la
+densidad de elementos Gypsy, Copia y genes (elementos por Mb),
+normalizando por la longitud real de la ventana para evitar el sesgo de
+las ventanas terminales de cada cromosoma.
+
+La correlación de Spearman entre la densidad génica y la densidad de
+elementos **Gypsy** fue de **ρ = `r rho_gypsy`** (p =
+`r pval_gypsy_fmt`), lo que indica una asociación `r direccion_gypsy`
+entre ambas variables. En el caso de los elementos **Copia**, el
+coeficiente fue de **ρ = `r rho_copia`** (p = `r pval_copia_fmt`),
+indicando también una relación `r direccion_copia` con la densidad
+génica.
+
+Estos resultados son coherentes con los patrones observados en los
+análisis de distancia al gen más cercano, y sugieren que ambas
+superfamilias presentan preferencias de inserción diferenciadas respecto
+a las regiones génicas del genoma.
+
+#### Transposones de ADN (Transposones de clase II)
+
+```{r tabla-transposones-adn, echo=FALSE, warning=FALSE}
+# Superclases de transposones de ADN: TIR y nonTIR
+transposones_adn_df <- clases_te_df %>%
+  rename(
+    superclase             = superclass,
+    numero_elementos       = Count,
+    pb_enmascaradas        = bpMasked,
+    porcentaje_enmascarado = pct_masked
+  ) %>%
+  filter(superclase %in% c("nonTIR", "TIR")) %>%
+  group_by(superclase) %>%
+  summarise(
+    numero_elementos       = sum(numero_elementos,       na.rm = TRUE),
+    pb_enmascaradas        = sum(pb_enmascaradas,        na.rm = TRUE),
+    porcentaje_enmascarado = sum(porcentaje_enmascarado, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pb_enmascaradas))
+
+datatable(
+  transposones_adn_df,
+  options = list(scrollX = TRUE, autoWidth = TRUE)
+)
+```
+
+```{r grafico-transposones-adn, echo=FALSE, warning=FALSE, fig.cap="Figura 18. Porcentaje de transposones de ADN respecto a la longitud del genoma."}
+ggplot(
+  transposones_adn_df,
+  aes(x = "", y = porcentaje_enmascarado, fill = superclase)
+) +
+  geom_col(position = position_stack(reverse = TRUE), width = 0.5) +
+  labs(
+    x       = "Transposones de ADN",
+    y       = "Porcentaje enmascarado (%)"
+  ) +
+  theme_minimal() 
+
+```
+
+```{r texto-top-transposon-adn, include=FALSE}
+transposon_adn_top_df <- transposones_adn_df %>%
+  slice_max(porcentaje_enmascarado, n = 1)
+
+top_adn_superclase  <- transposon_adn_top_df$superclase
+top_adn_pct         <- round(transposon_adn_top_df$porcentaje_enmascarado, 1)
+top_adn_bp          <- transposon_adn_top_df$pb_enmascaradas
+top_adn_bp_fmt      <- format(top_adn_bp, big.mark = " ", scientific = FALSE)
+```
+
+Dentro de los transposones de ADN (o transposones de clase II), la
+categoría más abundante fue **`r top_adn_superclase`**, que representó
+el **`r top_adn_pct` %** del genoma enmascarado y ocupó aproximadamente
+**`r top_adn_bp_fmt` bp**.
+
+```{r grafico-familias-tir, echo=FALSE, fig.cap="Figura 19. Porcentaje de TIR respecto a la longitud del genoma."}
+# Familias TIR del CSV
+familias_tir_df <- clases_te_df %>%
+  filter(te_class %in% c(
+    "TIR/CACTA", "TIR/Mutator", "TIR/PIF_Harbinger",
+    "TIR/Tc1_Mariner", "TIR/hAT"
+  )) %>%
+  mutate(
+    familia_tir = recode(
+      te_class,
+      "TIR/CACTA"         = "CACTA",
+      "TIR/Mutator"       = "Mutator",
+     "TIR/PIF_Harbinger" = "PIF-Harbinger",
+     "TIR/Tc1_Mariner"   = "Tc1-Mariner",
+      "TIR/hAT"           = "hAT"
+    )
+  ) %>%
+  rename(
+    superclase             = superclass,
+    numero_elementos       = Count,
+    porcentaje_enmascarado = pct_masked
+  )
+
+ggplot(
+  familias_tir_df,
+  aes(x = "", y = porcentaje_enmascarado, fill = familia_tir)
+) +
+  geom_col(position = position_stack(reverse = TRUE), width = 0.5) +
+  labs(
+    x       = "Elementos TIR",
+    y       = "Porcentaje enmascarado (%)",
+    fill    = NULL
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = colores_superfamilias)
+
+```
+
+```{r texto-ranking-tir, include=FALSE}
+ranking_tir_df <- familias_tir_df %>%
+  arrange(desc(porcentaje_enmascarado))
+
+tir_familia_1 <- ranking_tir_df$familia_tir[1]
+tir_familia_2 <- ranking_tir_df$familia_tir[2]
+tir_familia_3 <- ranking_tir_df$familia_tir[3]
+tir_pct_1     <- round(ranking_tir_df$porcentaje_enmascarado[1], 1)
+tir_pct_2     <- round(ranking_tir_df$porcentaje_enmascarado[2], 1)
+tir_pct_3     <- round(ranking_tir_df$porcentaje_enmascarado[3], 1)
+```
+
+Dentro de los elementos TIR, la mayor proporción corresponde a
+**`r tir_familia_1`** (`r tir_pct_1` %), seguida de
+**`r tir_familia_2`** (`r tir_pct_2` %) y **`r tir_familia_3`**
+(`r tir_pct_3` %).
+
+a.  Distribución cromosómica de los transposones TIR.
+
+```{r grafico-tir-por-cromosoma, echo=FALSE, warning=FALSE, fig.cap="Figura 20. Disribución cromosómica de los elementos TIR."}
+tir_por_cromosoma_df <- gff3_edta_df %>%
+  filter(classification %in% c(
+    "DNA/DTM", "DNA/MULE-MuDR", "MITE/DTM",
+    "DNA/DTA", "DNA/hAT-Tip100", "DNA/hAT-Tag1", "DNA/hAT-Ac", "MITE/DTA",
+    "DNA/PIF-Harbinger", "MITE/DTH",
+    "DNA/DTC", "DNA/CMC-EnSpm", "MITE/DTC",
+    "DNA/DTT", "MITE/DTT"
+  )) %>%
+  mutate(
+    familia = case_when(
+      classification %in% c("DNA/DTM", "DNA/MULE-MuDR", "MITE/DTM")       ~ "Mutator",
+      classification %in% c("DNA/DTA", "DNA/hAT-Tip100", "DNA/hAT-Tag1",
+                             "DNA/hAT-Ac", "MITE/DTA")                     ~ "hAT",
+      classification %in% c("DNA/PIF-Harbinger", "MITE/DTH")              ~ "PIF-Harbinger",
+      classification %in% c("DNA/DTC", "DNA/CMC-EnSpm", "MITE/DTC")       ~ "CACTA",
+      classification %in% c("DNA/DTT", "MITE/DTT")                        ~ "Tc1-Mariner"
+    )
+  ) %>%
+  group_by(seqnames, familia) %>%
+  summarise(bp_ocupados = sum(end - start + 1), .groups = "drop") %>%  # ← CAMBIO
+  rename(nombre_chr = seqnames) %>%
+  left_join(
+    mapa_cromosomas_df %>%
+      mutate(etiqueta_chr = str_replace(nombre_chr, "Chr_", "Cromosoma_")) %>%
+      select(nombre_chr, etiqueta_chr, longitud_bp),
+    by = "nombre_chr"
+  ) %>%
+  mutate(
+    etiqueta_chr = factor(etiqueta_chr, levels = paste0("Cromosoma_", 1:12))
+  )
+
+factor_escala_tir <- max(tir_por_cromosoma_df$bp_ocupados) / 
+                     max(tir_por_cromosoma_df$longitud_bp) * 1.1  # ← escala dinámica
+
+ggplot(tir_por_cromosoma_df, aes(x = etiqueta_chr, y = bp_ocupados, fill = familia)) +
+  geom_col(position = "dodge") +
+  geom_line(
+    data        = tir_por_cromosoma_df %>% distinct(etiqueta_chr, longitud_bp),
+    aes(x = etiqueta_chr, y = longitud_bp * factor_escala_tir, group = 1),
+    color       = "goldenrod",
+    linewidth   = 1,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(
+    name     = "Pares de bases ocupadas (bp)",          # ← CAMBIO
+    sec.axis = sec_axis(~ . / factor_escala_tir,
+                        name = "Tamaño del cromosoma (pb)")
+  ) +
+  labs(
+    x    = NULL,
+    fill = "Familia"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = colores_superfamilias)
+
+```
+
+```{r texto-chr-max-min-tir, include=FALSE}
+# Calcular el cromosoma con mayor y menor número de elementos TIR (total)
+tir_totales_df <- tir_por_cromosoma_df %>%
+  group_by(etiqueta_chr) %>%
+  summarise(total_tir = sum(bp_ocupados), .groups = "drop")
+
+chr_max_tir <- as.character(tir_totales_df$etiqueta_chr[which.max(tir_totales_df$total_tir)])
+chr_min_tir <- as.character(tir_totales_df$etiqueta_chr[which.min(tir_totales_df$total_tir)])
+
+# Familia más abundante globalmente
+familia_top_tir <- tir_por_cromosoma_df %>%
+  group_by(familia) %>%
+  summarise(total = sum(bp_ocupados), .groups = "drop") %>%
+  slice_max(total, n = 1) %>%
+  pull(familia)
+```
+
+El cromosoma con mayor número de transposones TIR fue `r chr_max_tir`,
+mientras que el menor número se observó en `r chr_min_tir`. La familia
+más abundante en el conjunto del genoma fue **`r familia_top_tir`**.
+
+b.  Distribución cromosómica de la densidad de transposones de ADN y
+    genes.
+
+```{r crear-granges-tir, include=FALSE}
+# Objetos GRanges para las principales familias TIR incluyendo MITEs
+# Se filtra por 'classification' para incluir tanto elementos autónomos como MITEs
+
+pif_gr <- gff3_edta_df %>%
+  filter(classification %in% c("DNA/PIF-Harbinger", "MITE/DTH")) %>%
+  makeGRangesFromDataFrame()
+
+mutator_gr <- gff3_edta_df %>%
+  filter(classification %in% c("DNA/DTM", "DNA/MULE-MuDR", "MITE/DTM")) %>%
+  makeGRangesFromDataFrame()
+
+hat_gr <- gff3_edta_df %>%
+  filter(classification %in% c("DNA/DTA", "DNA/hAT-Tip100", "DNA/hAT-Tag1", 
+                                "DNA/hAT-Ac", "MITE/DTA")) %>%
+  makeGRangesFromDataFrame()
+
+cacta_gr <- gff3_edta_df %>%
+  filter(classification %in% c("DNA/DTC", "DNA/CMC-EnSpm", "MITE/DTC")) %>%
+  makeGRangesFromDataFrame()
+
+tc1_mariner_gr <- gff3_edta_df %>%
+  filter(classification %in% c("DNA/DTT", "MITE/DTT")) %>%
+  makeGRangesFromDataFrame()
+```
+
+```{r grafico-kariotipo-tir, echo=FALSE, message=FALSE, warning=FALSE}
+# Cariotipo global de densidad TIR:
+# Panel superior: PIF-Harbinger (naranja) y Mutator (morado)
+# Panel inferior: hAT (azul) y genes (verde)
+
+kariotipo_tir <- plotKaryotype(genome = cromosomas_gr, plot.type = 2, labels = NULL)
+
+kpAddLabels(kariotipo_tir,
+            labels       = seqlevels(cromosomas_gr),
+            label.margin = 0.05,
+            cex          = 0.6)
+
+# PIF-Harbinger — panel superior
+kpPlotDensity(kariotipo_tir, data = pif_gr,
+              col = alpha("#E67E22", 0.4), border = "#A04000",
+              r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+kpAddLabels(kariotipo_tir, labels = "PIF-Harbinger",
+            r0 = 0, r1 = 0, cex = 0.6, col = "#A04000")
+
+# Mutator — panel superior (superpuesto)
+kpPlotDensity(kariotipo_tir, data = mutator_gr,
+              col = alpha("#8E44AD", 0.4), border = "#6C3483",
+              r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+kpAddLabels(kariotipo_tir, labels = "Mutator",
+            r0 = 1, r1 = 1, cex = 0.6, col = "#6C3483")
+
+# hAT — panel inferior
+kpPlotDensity(kariotipo_tir, data = hat_gr,
+              col = alpha("#2980B9", 0.4), border = "#1F618D",
+              r0 = 0, r1 = 1, data.panel = 2, window.size = 500000)
+kpAddLabels(kariotipo_tir, labels = "hAT",
+            data.panel = 2, r0 = 0, r1 = 0, cex = 0.6, col = "#1F618D")
+
+# Genes — panel inferior (superpuesto)
+kpPlotDensity(kariotipo_tir, data = genes_gr,
+              col = alpha("green", 0.4), border = "darkgreen",
+              r0 = 0, r1 = 1, data.panel = 2, window.size = 500000)
+kpAddLabels(kariotipo_tir, labels = "Gen",
+            data.panel = 2, r0 = 1, r1 = 1, cex = 0.6, col = "darkgreen")
+```
+
+Figura 21. Distribución de la densidad de transposones TIR
+(PIF-Harbinger en naranja, Mutator en morado, hAT en azul) y genes
+(verde) a lo largo de los cromosomas.
+
+La figura muestra la distribución de la densidad de transposones TIR a
+lo largo de los cromosomas, con especial atención a **PIF-Harbinger**
+(naranja) y **Mutator** (morado) en el panel superior, y **hAT** (azul)
+junto con los **genes** (verde) en el panel inferior.
+
+```{r graficos-tir-cromosoma-individual, echo=FALSE, warning=FALSE}
+for (chr_actual in nombres_cromosomas) {
+
+  pif_chr_gr        <- pif_gr[seqnames(pif_gr)               == chr_actual]
+  mutator_chr_gr    <- mutator_gr[seqnames(mutator_gr)        == chr_actual]
+  hat_chr_gr        <- hat_gr[seqnames(hat_gr)                == chr_actual]
+  genes_chr_gr      <- genes_gr[seqnames(genes_gr)            == chr_actual]
+
+  kp_tir_chr <- plotKaryotype(
+    genome      = cromosomas_gr,
+    chromosomes = chr_actual,
+    plot.type   = 2,
+    labels      = NULL
+  )
+
+  kpAddLabels(kp_tir_chr, labels = chr_actual, label.margin = 0.03, cex = 0.8)
+
+  # PIF-Harbinger (autónomos + MITEs) — panel superior
+  kpPlotDensity(kp_tir_chr, data = pif_chr_gr,
+                col = alpha("#E67E22", 0.4), border = "#A04000",
+                r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+  kpAddLabels(kp_tir_chr, labels = "PIF-Harbinger",
+              r0 = 0, r1 = 0, cex = 0.7, col = "#A04000")
+
+  # Mutator (autónomos + MITEs) — panel superior (superpuesto)
+  kpPlotDensity(kp_tir_chr, data = mutator_chr_gr,
+                col = alpha("#8E44AD", 0.4), border = "#6C3483",
+                r0 = 0, r1 = 1, data.panel = 1, window.size = 500000)
+  kpAddLabels(kp_tir_chr, labels = "Mutator",
+              r0 = 1, r1 = 1, cex = 0.7, col = "#6C3483")
+
+  # hAT (autónomos + MITEs) — panel inferior
+  kpPlotDensity(kp_tir_chr, data = hat_chr_gr,
+                col = alpha("#2980B9", 0.4), border = "#1F618D",
+                r0 = 0, r1 = 1, data.panel = 2, window.size = 500000)
+  kpAddLabels(kp_tir_chr, labels = "hAT",
+              data.panel = 2, r0 = 0, r1 = 0, cex = 0.7, col = "#1F618D")
+
+  # Genes — panel inferior (superpuesto)
+  kpPlotDensity(kp_tir_chr, data = genes_chr_gr,
+                col = alpha("green", 0.4), border = "darkgreen",
+                r0 = 0, r1 = 1, data.panel = 2, window.size = 500000)
+  kpAddLabels(kp_tir_chr, labels = "Gen",
+              data.panel = 2, r0 = 1, r1 = 1, cex = 0.7, col = "darkgreen")
+}
+```
+
+Figura 22. Densidad de transposones TIR PIF-Harbinger (naranja), Mutator
+(morado), hAT (azul) y genes (verde) por cromosoma.
+
+Se muestra de manera individual la densidad de **PIF-Harbinger**
+(naranja) y **Mutator** (morado) en el panel superior, y **hAT** (azul)
+junto con los **genes** (verde) en el panel inferior para cada
+cromosoma.
+
+c.  Análisis de MITEs
+
+```{r clasificar-mites-autonomos, include=FALSE}
+# -------------------------------------------------------
+# CLASIFICACIÓN DE ELEMENTOS TIR EN MITES Y AUTÓNOMOS
+# -------------------------------------------------------
+
+# Vector de clasificaciones MITE y autónomas por familia
+clasificaciones_tir_df <- gff3_edta_df %>%
+  filter(classification %in% c(
+    # Mutator
+    "DNA/DTM", "DNA/MULE-MuDR", "MITE/DTM",
+    # hAT
+    "DNA/DTA", "DNA/hAT-Tip100", "DNA/hAT-Tag1", "DNA/hAT-Ac", "MITE/DTA",
+    # PIF-Harbinger
+    "DNA/PIF-Harbinger", "MITE/DTH",
+    # CACTA
+    "DNA/DTC", "DNA/CMC-EnSpm", "MITE/DTC",
+    # Tc1-Mariner
+    "DNA/DTT", "MITE/DTT"
+  )) %>%
+  mutate(
+    familia = case_when(
+      classification %in% c("DNA/DTM", "DNA/MULE-MuDR", "MITE/DTM")       ~ "Mutator",
+      classification %in% c("DNA/DTA", "DNA/hAT-Tip100", "DNA/hAT-Tag1",
+                             "DNA/hAT-Ac", "MITE/DTA")                     ~ "hAT",
+      classification %in% c("DNA/PIF-Harbinger", "MITE/DTH")              ~ "PIF-Harbinger",
+      classification %in% c("DNA/DTC", "DNA/CMC-EnSpm", "MITE/DTC")       ~ "CACTA",
+      classification %in% c("DNA/DTT", "MITE/DTT")                        ~ "Tc1-Mariner"
+    ),
+    tipo_elemento = if_else(
+      str_starts(classification, "MITE"),
+      "MITE",
+      "Autónomo"
+    )
+  )
+
+# Resumen por familia y tipo
+resumen_mite_autonomo_df <- clasificaciones_tir_df %>%
+  group_by(familia, tipo_elemento) %>%
+  summarise(n_elementos = n(), .groups = "drop") %>%
+  group_by(familia) %>%
+  mutate(porcentaje = round(100 * n_elementos / sum(n_elementos), 1)) %>%
+  ungroup()
+```
+
+```{r grafico-mite-vs-autonomo, echo=FALSE, warning=FALSE, fig.cap="Figura 23. Proporción de MITEs y elementos autónomos por familia TIR."}
+ggplot(resumen_mite_autonomo_df,
+       aes(x = familia, y = porcentaje, fill = tipo_elemento)) +
+  geom_col(position = "stack", width = 0.6) +
+  geom_text(aes(label = paste0(porcentaje, "%")),
+            position = position_stack(vjust = 0.5),
+            size = 3.5, color = "white", fontface = "bold") +
+  scale_fill_manual(values = colores_superfamilias) +
+  labs(
+    x       = "Familia",
+    y       = "Porcentaje (%)",
+    fill    = "Tipo de elemento"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1))
+  
+```
+
+```{r texto-mite-autonomo, include=FALSE}
+# Familia con mayor proporción de MITEs
+familia_max_mite <- resumen_mite_autonomo_df %>%
+  filter(tipo_elemento == "MITE") %>%
+  slice_max(porcentaje, n = 1)
+
+familia_max_mite_nombre <- familia_max_mite$familia
+familia_max_mite_pct    <- familia_max_mite$porcentaje
+
+# Total de MITEs y autónomos
+total_mites     <- sum(resumen_mite_autonomo_df$n_elementos[resumen_mite_autonomo_df$tipo_elemento == "MITE"])
+total_autonomos <- sum(resumen_mite_autonomo_df$n_elementos[resumen_mite_autonomo_df$tipo_elemento == "Autónomo"])
+total_mites_fmt     <- format(total_mites,     big.mark = " ", scientific = FALSE)
+total_autonomos_fmt <- format(total_autonomos, big.mark = " ", scientific = FALSE)
+```
+
+El análisis de la proporción de MITEs y elementos autónomos revela que
+los MITEs constituyen una fracción relevante del total de transposones
+TIR, con **`r total_mites_fmt`** MITEs frente a
+**`r total_autonomos_fmt`** elementos autónomos. La familia con mayor
+proporción de MITEs fue **`r familia_max_mite_nombre`**
+(`r familia_max_mite_pct` %), lo que sugiere una mayor capacidad de
+generación de elementos no autónomos en esta familia.
+
+```{r analisis-clases-mites, include=FALSE}
+# -------------------------------------------------------
+# ANÁLISIS DE LAS CLASES DE MITES
+# -------------------------------------------------------
+
+mites_df <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "MITE") %>%
+  mutate(
+    seqnames     = as.character(seqnames),
+    etiqueta_chr = str_replace(seqnames, "Chr_", "Cromosoma_"),
+    etiqueta_chr = factor(etiqueta_chr, levels = paste0("Cromosoma_", 1:12))
+  )
+
+# Resumen por clase de MITE
+resumen_clases_mite_df <- mites_df %>%
+  group_by(classification, familia) %>%
+  summarise(n_elementos = n(), .groups = "drop") %>%
+  arrange(desc(n_elementos))
+
+# Total por clase para texto inline
+clase_mite_top <- resumen_clases_mite_df %>%
+  slice_max(n_elementos, n = 1)
+
+clase_mite_top_nombre <- clase_mite_top$classification
+clase_mite_top_n      <- format(clase_mite_top$n_elementos, big.mark = " ", scientific = FALSE)
+```
+
+```{r tabla-clases-mites, echo=FALSE}
+datatable(
+  resumen_clases_mite_df %>%
+    rename(
+      Clasificación    = classification,
+      Familia          = familia,
+      Número_elementos = n_elementos
+    ),
+  options = list(scrollX = TRUE, autoWidth = TRUE, pageLength = 5)
+)
+```
+
+```{r grafico-clases-mites, echo=FALSE, warning=FALSE, fig.cap="Figura 24. Abundancia de las clases de MITEs."}
+ggplot(resumen_clases_mite_df,
+       aes(x = reorder(classification, n_elementos), y = n_elementos, fill = familia)) +
+  geom_col(width = 0.6) +
+  coord_flip() +
+  scale_fill_manual(values= colores_superfamilias) +
+  labs(
+    x       = "Clase de MITE",
+    y       = "Número de elementos",
+    fill    = "Familia"
+  ) +
+  theme_minimal()
+```
+
+```{r grafico-mites-por-cromosoma, echo=FALSE, warning=FALSE, fig.cap="Figura 25. Distribución cromosómica de las clases de MITEs."}
+mites_chr_df <- mites_df %>%
+  group_by(etiqueta_chr, classification) %>%
+  summarise(cantidad = n(), .groups = "drop") %>%
+  left_join(
+    mapa_cromosomas_df %>%
+      mutate(etiqueta_chr = str_replace(nombre_chr, "Chr_", "Cromosoma_")) %>%
+      select(etiqueta_chr, longitud_bp),
+    by = "etiqueta_chr"
+  ) %>%
+  mutate(
+    etiqueta_chr = factor(etiqueta_chr, levels = paste0("Cromosoma_", 1:12))
+  ) %>%
+  left_join(
+    clasificaciones_tir_df %>% distinct(classification, familia),
+    by = "classification"
+  ) %>%
+  mutate(
+    etiqueta_leyenda = paste0(classification, " (", familia, ")")
+  )
+
+# Factor de escala automático
+max_cantidad_chr <- mites_chr_df %>%
+  group_by(etiqueta_chr) %>%
+  summarise(total = sum(cantidad)) %>%
+  pull(total) %>%
+  max()
+
+factor_escala_mites <- max(mapa_cromosomas_df$longitud_bp) / max_cantidad_chr
+
+ggplot(mites_chr_df, aes(x = etiqueta_chr, y = cantidad, fill = familia)) +
+  geom_col(position = "stack") +
+  geom_line(
+    data        = mites_chr_df %>% distinct(etiqueta_chr, longitud_bp),
+    aes(x = etiqueta_chr, y = longitud_bp / factor_escala_mites, group = 1),
+    color       = "goldenrod",
+    linewidth   = 1,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(
+    name     = "Número de elementos",
+    sec.axis = sec_axis(~ . * factor_escala_mites, name = "Tamaño del cromosoma (pb)")
+  ) +
+  scale_fill_manual(values = colores_superfamilias) +
+  labs(
+    x    = NULL,
+    fill = "Familia"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r distancia-mites-autonomos-global, include=FALSE}
+# -------------------------------------------------------
+# DISTANCIA AL GEN MÁS CERCANO: MITES VS AUTÓNOMOS
+# -------------------------------------------------------
+
+mites_gr     <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "MITE") %>%
+  makeGRangesFromDataFrame()
+
+autonomos_gr <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "Autónomo") %>%
+  makeGRangesFromDataFrame()
+
+# Distancias globales
+dist_mites_hits     <- distanceToNearest(mites_gr,     genes_gr, ignore.strand = TRUE)
+dist_autonomos_hits <- distanceToNearest(autonomos_gr, genes_gr, ignore.strand = TRUE)
+
+distancias_mite_autonomo_df <- bind_rows(
+  data.frame(tipo_elemento = "MITE",
+             distancia_gen = mcols(dist_mites_hits)$distance),
+  data.frame(tipo_elemento = "Autónomo",
+             distancia_gen = mcols(dist_autonomos_hits)$distance)
+)
+
+# Distancias por familia
+distancias_por_familia_df <- bind_rows(
+  lapply(unique(clasificaciones_tir_df$familia), function(fam) {
+    mites_fam <- clasificaciones_tir_df %>%
+      filter(familia == fam, tipo_elemento == "MITE") %>%
+      makeGRangesFromDataFrame()
+    autonomos_fam <- clasificaciones_tir_df %>%
+      filter(familia == fam, tipo_elemento == "Autónomo") %>%
+      makeGRangesFromDataFrame()
+    bind_rows(
+      if (length(mites_fam) > 0)
+        data.frame(familia = fam, tipo_elemento = "MITE",
+                   distancia_gen = mcols(distanceToNearest(mites_fam, genes_gr,
+                                         ignore.strand = TRUE))$distance),
+      if (length(autonomos_fam) > 0)
+        data.frame(familia = fam, tipo_elemento = "Autónomo",
+                   distancia_gen = mcols(distanceToNearest(autonomos_fam, genes_gr,
+                                         ignore.strand = TRUE))$distance)
+    )
+  })
+)
+
+# Wilcoxon global
+wilcox_mite_autonomo   <- wilcox.test(distancia_gen ~ tipo_elemento,
+                                       data = distancias_mite_autonomo_df)
+mediana_mite           <- round(median(distancias_mite_autonomo_df$distancia_gen[
+                                  distancias_mite_autonomo_df$tipo_elemento == "MITE"], na.rm = TRUE), 0)
+mediana_autonomo       <- round(median(distancias_mite_autonomo_df$distancia_gen[
+                                  distancias_mite_autonomo_df$tipo_elemento == "Autónomo"], na.rm = TRUE), 0)
+tipo_mas_cercano_gen_tir <- if_else(mediana_mite < mediana_autonomo, "MITEs", "autónomos")
+pval_wilcox_mite       <- formatear_pval(wilcox_mite_autonomo$p.value)
+
+conclusion_wilcox_mite <- if_else(
+  wilcox_mite_autonomo$p.value < 0.05,
+  "estadísticamente significativa",
+  "estadísticamente no significativa"
+)
+```
+
+```{r grafico-distancia-mite-autonomo-global, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 26. Distancia al gen más cercano: MITEs vs elementos autónomos."}
+ggplot(distancias_mite_autonomo_df,
+       aes(x = tipo_elemento, y = distancia_gen, fill = tipo_elemento)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10() +
+  scale_fill_manual(values = colores_superfamilias) +
+  labs(
+    x       = "Tipo de elemento",
+    y       = "Distancia al gen más cercano (bp, escala log10)"
+  ) +
+  theme_minimal()
+```
+
+```{r grafico-distancia-mite-autonomo-familia, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 27. Distancia al gen más cercano por familia TIR."}
+# Boxplot por familia
+ggplot(distancias_por_familia_df,
+       aes(x = tipo_elemento, y = distancia_gen, fill = tipo_elemento)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10() +
+  scale_fill_manual(values = colores_superfamilias) +
+  facet_wrap(~ familia, scales = "free_y") +
+  labs(
+    x       = "Tipo de elemento",
+    y       = "Distancia al gen más cercano (bp, escala log10)",
+    fill    = "Tipo de elemento"
+  ) +
+  theme_minimal()
+
+  
+```
+
+La distancia al gen más cercano de los elementos autónomos presenta una
+mediana de ≈ `r format(mediana_autonomo, big.mark = " ")` bp, mientras
+que la de los MITEs es de ≈ `r format(mediana_mite, big.mark = " ")` bp.
+Según el test de Wilcoxon, la diferencia entre ambos grupos es
+`r conclusion_wilcox_mite` (p = `r pval_wilcox_mite`).
+
+
+```{r ventanas-mites-autonomos, message=FALSE, include=FALSE}
+# -------------------------------------------------------
+# ANÁLISIS DE VENTANAS DE 1 Mb: MITES VS AUTÓNOMOS
+# -------------------------------------------------------
+
+# Contar MITEs y autónomos por ventana
+n_mites_por_ventana     <- countOverlaps(ventanas_gr, mites_gr,     ignore.strand = TRUE)
+n_autonomos_por_ventana <- countOverlaps(ventanas_gr, autonomos_gr, ignore.strand = TRUE)
+
+# Añadir al data frame de ventanas
+ventanas_tir_df <- ventanas_densidad_df %>%
+  mutate(
+    n_mites              = n_mites_por_ventana,
+    n_autonomos          = n_autonomos_por_ventana,
+    densidad_mites_mb    = n_mites     / longitud_mb,
+    densidad_autonomos_mb = n_autonomos / longitud_mb
+  )
+
+# Correlaciones con densidad génica
+corr_mites_genes     <- cor.test(
+  ventanas_tir_df$densidad_mites_mb,
+  ventanas_tir_df$densidad_genes_por_mb,
+  method = "spearman", exact = FALSE
+)
+corr_autonomos_genes <- cor.test(
+  ventanas_tir_df$densidad_autonomos_mb,
+  ventanas_tir_df$densidad_genes_por_mb,
+  method = "spearman", exact = FALSE
+)
+
+# Estadísticos para texto inline
+rho_mites_genes      <- round(corr_mites_genes$estimate,     3)
+rho_autonomos_genes  <- round(corr_autonomos_genes$estimate, 3)
+pval_mites_genes     <- formatear_pval(corr_mites_genes$p.value)
+pval_autonomos_genes <- formatear_pval(corr_autonomos_genes$p.value)
+
+direccion_mites     <- if_else(rho_mites_genes    > 0, "positiva", "negativa")
+direccion_autonomos <- if_else(rho_autonomos_genes > 0, "positiva", "negativa")
+
+```
+
+```{r grafico-ventanas-mites-autonomos-global, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 28. Correlación entre densidad génica y densidad de MITEs/autónomos (ventanas de 1 Mb)."}
+# Formato largo para facet
+ventanas_tir_largo_df <- ventanas_tir_df %>%
+  select(cromosoma, densidad_genes_por_mb,
+         densidad_mites_mb, densidad_autonomos_mb) %>%
+  tidyr::pivot_longer(
+    cols      = c(densidad_mites_mb, densidad_autonomos_mb),
+    names_to  = "tipo_elemento",
+    values_to = "densidad_tir_mb"
+  ) %>%
+  mutate(
+    tipo_elemento = recode(tipo_elemento,
+      "densidad_mites_mb"     = "MITE",
+      "densidad_autonomos_mb" = "Autónomo"
+    )
+  )
+
+etiquetas_global_df <- data.frame(
+  tipo_elemento = c("MITE", "Autónomo"),
+  etiqueta      = c(
+    sprintf("ρ = %.3f\np = %s", rho_mites_genes,    pval_mites_genes),
+    sprintf("ρ = %.3f\np = %s", rho_autonomos_genes, pval_autonomos_genes)
+  )
+)
+# He filtrado para quitar los valores extremos (outliers)
+ventanas_tir_largo_df_filtrado <- ventanas_tir_largo_df %>% 
+  filter(densidad_genes_por_mb < 100) %>%
+  filter(densidad_tir_mb < 150)
+
+ggplot(ventanas_tir_largo_df_filtrado,
+       aes(x = densidad_genes_por_mb, y = densidad_tir_mb, color = tipo_elemento)) +
+  geom_point(alpha = 0.4, size = 2.5) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.8, color = "black") +
+  geom_text(
+    data        = etiquetas_global_df,
+    aes(label   = etiqueta),
+    x           = Inf, y = Inf,
+    hjust       = 1.1, vjust = 1.4,
+    size        = 3.2, color = "black",
+    inherit.aes = FALSE
+  ) +
+  scale_color_manual(values = c("Autónomo" = "#2C3E50", "MITE" = "#E67E22")) +
+  facet_wrap(~ tipo_elemento, scales = "free_y") +
+  labs(
+    x       = "Densidad génica (genes / Mb)",
+    y       = "Densidad de elementos TIR (elementos / Mb)",
+    color   = "Tipo de elemento"
+  ) +
+  theme_minimal()
+```
+
+El análisis de ventanas de 1 Mb revela que los **MITEs** presentan una
+correlación `r direccion_mites` con la densidad génica (ρ =
+`r rho_mites_genes`, p = `r pval_mites_genes`), mientras que los
+elementos **autónomos** muestran una correlación `r direccion_autonomos`
+(ρ = `r rho_autonomos_genes`, p = `r pval_autonomos_genes`). El desglose
+por familia muestra que este patrón no es uniforme, con diferencias en
+la intensidad y dirección de la correlación entre familias, lo que
+sugiere que cada familia presenta una dinámica de inserción particular
+respecto a las regiones génicas del genoma.
+
+d.  Distribución del tamaño de los elementos TIR.
+
+```{r distribucion-tamanos-tir, include=FALSE}
+# -------------------------------------------------------
+# DISTRIBUCIÓN DE TAMAÑOS DE ELEMENTOS TIR ESTRUCTURALES
+# Comparación entre MITEs y autónomos completos (method=structural)
+# -------------------------------------------------------
+
+# Autónomos estructuralmente completos
+tir_autonomos_tamano_df <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "Autónomo", method == "structural") %>%
+  mutate(longitud_bp = end - start + 1)
+
+# MITEs estructuralmente completos
+mites_tamano_df <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "MITE", method == "structural") %>%
+  mutate(longitud_bp = end - start + 1)
+
+# Unir para facilitar la visualización conjunta
+tir_tamanos_df <- bind_rows(tir_autonomos_tamano_df, mites_tamano_df)
+
+# Estadísticos descriptivos para texto inline
+resumen_tir_tamanos_df <- tir_tamanos_df %>%
+  group_by(tipo_elemento) %>%
+  summarise(
+    n                = n(),
+    longitud_media   = round(mean(longitud_bp),   0),
+    longitud_mediana = round(median(longitud_bp), 0),
+    longitud_min     = min(longitud_bp),
+    longitud_max     = max(longitud_bp),
+    .groups          = "drop"
+  )
+
+# Extraer valores para texto inline
+mediana_autonomos_tir <- resumen_tir_tamanos_df$longitud_mediana[
+  resumen_tir_tamanos_df$tipo_elemento == "Autónomo"]
+mediana_mites_tir     <- resumen_tir_tamanos_df$longitud_mediana[
+  resumen_tir_tamanos_df$tipo_elemento == "MITE"]
+max_autonomos_tir     <- format(
+  resumen_tir_tamanos_df$longitud_max[resumen_tir_tamanos_df$tipo_elemento == "Autónomo"],
+  big.mark = " ", scientific = FALSE)
+max_mites_tir         <- format(
+  resumen_tir_tamanos_df$longitud_max[resumen_tir_tamanos_df$tipo_elemento == "MITE"],
+  big.mark = " ", scientific = FALSE)
+n_autonomos_tir       <- format(
+  resumen_tir_tamanos_df$n[resumen_tir_tamanos_df$tipo_elemento == "Autónomo"],
+  big.mark = " ", scientific = FALSE)
+n_mites_tir           <- format(
+  resumen_tir_tamanos_df$n[resumen_tir_tamanos_df$tipo_elemento == "MITE"],
+  big.mark = " ", scientific = FALSE)
+
+# Test de Wilcoxon para confirmar diferencia significativa
+wilcox_tir_tamanos <- wilcox.test(
+  longitud_bp ~ tipo_elemento,
+  data = tir_tamanos_df
+)
+pval_wilcox_tir_tamanos <- formatear_pval(wilcox_tir_tamanos$p.value)
+```
+
+```{r grafico-tamanos-tir-histograma, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 29. Distribución de tamaños de elementos TIR estructuralmente completos."}
+# Histograma + densidad por tipo de elemento
+ggplot(tir_tamanos_df, aes(x = longitud_bp, fill = tipo_elemento)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, alpha = 0.6, position = "identity") +
+  geom_density(alpha = 0.3) +
+  scale_fill_manual(
+    values = colores_superfamilias,
+    name   = NULL
+  ) +
+  scale_x_continuous(labels = scales::comma) +
+  facet_wrap(~ tipo_elemento, scales = "free") +
+  labs(
+    x       = "Longitud (bp)",
+    y       = "Densidad"
+  ) +
+  theme_minimal()
+```
+
+```{r grafico-tamanos-tir-boxplot, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 30. Comparación de tamaños entre MITEs y elementos TIR autónomos."}
+# Boxplot comparativo
+ggplot(tir_tamanos_df, aes(x = tipo_elemento, y = longitud_bp, fill = tipo_elemento)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_y_log10(labels = scales::comma) +
+  scale_fill_manual(
+    values = colores_superfamilias,
+    name   = NULL
+  ) +
+  labs(
+    x       = "Tipo de elemento",
+    y       = "Longitud (bp, escala log10)"
+  ) +
+  theme_minimal()
+
+```
+
+Los elementos TIR estructuralmente completos muestran diferencias de
+tamaño muy marcadas entre MITEs y autónomos. Los elementos **autónomos**
+(n = `r n_autonomos_tir`) presentan una longitud mediana de
+**`r format(mediana_autonomos_tir, big.mark = " ")` bp**, pudiendo
+alcanzar hasta `r max_autonomos_tir` bp en los elementos más largos. En
+contraste, los **MITEs** (n = `r n_mites_tir`) son considerablemente más
+pequeños, con una longitud mediana de
+**`r format(mediana_mites_tir, big.mark = " ")` bp** y un máximo de
+`r max_mites_tir` bp, coherente con su definición como elementos de
+pequeño tamaño. Esta diferencia es estadísticamente significativa según
+el test de Wilcoxon (p = `r pval_wilcox_tir_tamanos`), y refleja la
+ausencia de los dominios codificantes de la transposasa en los MITEs,
+que reduce drásticamente su tamaño respecto a los elementos autónomos
+parentales.
+
+```{r grafico-tamanos-mites-por-clase, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 31. Distribución de tamaños de MITEs estructuralmente completos por clase."}
+# -------------------------------------------------------
+# DISTRIBUCIÓN DE TAMAÑOS DE MITES POR CLASE
+# -------------------------------------------------------
+
+# Añadir longitud a mites_tamano_df si no existe
+mites_tamano_clase_df <- mites_tamano_df
+
+# Estadísticos por clase para texto inline
+resumen_tamanos_clase_df <- mites_tamano_clase_df %>%
+  group_by(classification) %>%
+  summarise(
+    n                = n(),
+    longitud_mediana = median(longitud_bp),
+    longitud_media   = round(mean(longitud_bp), 0),
+    longitud_max     = max(longitud_bp),
+    .groups          = "drop"
+  ) %>%
+  arrange(longitud_mediana)
+
+# Gráfico de densidad superpuesto por clase
+ggplot(mites_tamano_clase_df,
+       aes(x = longitud_bp, fill = classification, color = classification)) +
+  geom_density(alpha = 0.4, linewidth = 0.7) +
+  scale_fill_brewer(palette  = "Set2", name = "Clase") +
+  scale_color_brewer(palette = "Set2", name = "Clase") +
+  labs(
+    x       = "Longitud (bp)",
+    y       = "Densidad"
+  ) +
+  theme_minimal()
+
+```
+
+El análisis de la distribución de tamaños por clase de MITE permite
+identificar los tres picos observados en la distribución global. Las
+clases **MITE/DTM** (Mutator, mediana =
+`r resumen_tamanos_clase_df$longitud_mediana[resumen_tamanos_clase_df$classification == "MITE/DTM"]`
+bp, n =
+`r resumen_tamanos_clase_df$n[resumen_tamanos_clase_df$classification == "MITE/DTM"]`),
+**MITE/DTT** (Tc1-Mariner, mediana =
+`r resumen_tamanos_clase_df$longitud_mediana[resumen_tamanos_clase_df$classification == "MITE/DTT"]`
+bp) y **MITE/DTC** (CACTA, mediana =
+`r resumen_tamanos_clase_df$longitud_mediana[resumen_tamanos_clase_df$classification == "MITE/DTC"]`
+bp) se concentran en el rango de **250-280 bp**, generando el primer
+pico de la distribución global. Sus tamaños solapan considerablemente,
+siendo **MITE/DTM** el que domina visualmente por su mayor abundancia.
+
+El segundo pico, centrado en torno a **\~350 bp**, corresponde a la
+clase **MITE/DTH** (PIF-Harbinger, mediana =
+`r resumen_tamanos_clase_df$longitud_mediana[resumen_tamanos_clase_df$classification == "MITE/DTH"]`
+bp, n =
+`r resumen_tamanos_clase_df$n[resumen_tamanos_clase_df$classification == "MITE/DTH"]`),
+que ocupa un rango de tamaños intermedio claramente diferenciado de las
+demás clases.
+
+El tercer pico, situado en torno a **\~560 bp**, corresponde
+exclusivamente a **MITE/DTA** (hAT, mediana =
+`r resumen_tamanos_clase_df$longitud_mediana[resumen_tamanos_clase_df$classification == "MITE/DTA"]`
+bp, n =
+`r resumen_tamanos_clase_df$n[resumen_tamanos_clase_df$classification == "MITE/DTA"]`),
+que destaca por ser la clase con los MITEs más grandes, próximos al
+límite superior convencional de los MITEs (\~600 bp), y la segunda más
+abundante tras MITE/DTM. Este patrón refleja que cada familia de
+transposones TIR genera MITEs con longitudes características,
+probablemente determinadas por los requisitos mínimos de reconocimiento
+de la transposasa parental.
+
+```{r preparar-datos-resumen-global, include=FALSE}
+# -------------------------------------------------------
+# PREPARACIÓN DE DATOS PARA EL GRÁFICO DE RESUMEN GLOBAL
+# -------------------------------------------------------
+
+# Función para calcular densidad por ventana
+calcular_densidad <- function(elementos_gr, ventanas_gr, nombre) {
+  data.frame(
+    nombre_chr  = as.character(seqnames(ventanas_gr)),
+    inicio      = start(ventanas_gr),
+    fin         = end(ventanas_gr),
+    longitud_mb = width(ventanas_gr) / 1e6,
+    n_elementos = countOverlaps(ventanas_gr, elementos_gr, ignore.strand = TRUE),
+    tipo        = nombre
+  ) %>%
+    mutate(densidad = n_elementos / longitud_mb)
+}
+
+# Objetos GRanges para TIR autónomos y MITEs globales
+tir_autonomos_gr <- clasificaciones_tir_df %>%
+  filter(tipo_elemento == "Autónomo") %>%
+  makeGRangesFromDataFrame()
+
+# Crear ventanas de 2 Mb
+ventanas_2mb_gr <- tileGenome(
+  seqlengths             = longitudes_cromosomas,
+  tilewidth              = 2e6,
+  cut.last.tile.in.chrom = TRUE
+)
+
+# Calcular densidades para cada tipo
+densidades_2mb_df <- bind_rows(
+  calcular_densidad(genes_gr,         ventanas_2mb_gr, "Genes"),
+  calcular_densidad(copia_gr,         ventanas_2mb_gr, "LTR/Copia"),
+  calcular_densidad(gypsy_gr,         ventanas_2mb_gr, "LTR/Gypsy"),
+  calcular_densidad(tir_autonomos_gr, ventanas_2mb_gr, "TIR"),
+  calcular_densidad(mites_gr,         ventanas_2mb_gr, "MITEs")
+)
+
+# Calcular offset acumulado para concatenar cromosomas en el eje X
+offset_cromosomas_df <- mapa_cromosomas_df %>%
+  arrange(numero_cromosoma) %>%
+  mutate(offset_bp = lag(cumsum(longitud_bp), default = 0))
+
+# Añadir offset y posición genómica
+densidades_2mb_df <- densidades_2mb_df %>%
+  left_join(
+    offset_cromosomas_df %>% select(nombre_chr, offset_bp, numero_cromosoma),
+    by = "nombre_chr"
+  ) %>%
+  mutate(
+    posicion_genomica_mb = ((inicio + fin) / 2 + offset_bp) / 1e6,
+    tipo = factor(tipo, levels = c(
+      "Genes", "LTR/Copia", "LTR/Gypsy", "TIR", "MITEs"
+    ))
+  )
+
+# Coordenadas de separación y centros de cromosomas para etiquetas
+limites_chr_df <- offset_cromosomas_df %>%
+  mutate(
+    limite_mb = offset_bp / 1e6,
+    fin_mb    = (offset_bp + longitud_bp) / 1e6,
+    centro_mb = (offset_bp + longitud_bp / 2) / 1e6,
+    etiqueta  = paste0("Chr", str_pad(numero_cromosoma, 2, pad = "0"))
+  )
+```
+
+### Distribución genómica global de los elementos repetitivos
+
+La figura muestra la distribución de la densidad de los principales
+tipos de elementos repetitivos a lo largo de los 12 cromosomas de
+*Castanea sativa*, calculada en ventanas de 2 Mb. El panel superior
+representa la densidad génica (genes/Mb), el panel central la densidad
+de retrotransposones LTR (**Copia** en azul y **Gypsy** en rojo), y el
+panel inferior la densidad de transposones de ADN (**TIR** autónomos en
+morado y **MITEs** en naranja).
+
+```{r grafico-resumen-global, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 32. Distribución genómica de los principales elementos repetitivos (ventanas de 2 Mb). Panel superior: densidad génica. Panel central: LTR Copia (azul) y Gypsy (rojo). Panel inferior: TIR autónomos (morado) y MITEs (naranja)."}
+# -------------------------------------------------------
+# GRÁFICO DE RESUMEN GLOBAL CON PATCHWORK - 3 PANELES
+# Panel 1: Genes
+# Panel 2: LTR/Copia + LTR/Gypsy
+# Panel 3: TIR + MITEs
+# -------------------------------------------------------
+
+# Paleta de colores
+colores_tipo <- c(
+  "Genes"     = "darkgreen",
+  "LTR/Copia" = "#2c7bb6",
+  "LTR/Gypsy" = "#d7191c",
+  "TIR"       = "#8E44AD",
+  "MITEs"     = "#E67E22"
+)
+
+# Rango total del genoma en Mb
+rango_x <- range(densidades_2mb_df$posicion_genomica_mb)
+
+# Elementos comunes a los tres paneles
+lineas_chr <- list(
+  geom_vline(
+    data        = limites_chr_df,
+    aes(xintercept = limite_mb),
+    linetype    = "dashed",
+    color       = "gray40",
+    linewidth   = 0.3,
+    inherit.aes = FALSE
+  ),
+  scale_x_continuous(limits = rango_x, expand = c(0, 0)),
+  scale_color_manual(values = colores_tipo, name = NULL),
+  theme_minimal(),
+  theme(
+    legend.position = "top",
+    legend.text     = element_text(size = 9),
+    axis.text.x     = element_blank(),
+    axis.ticks.x    = element_blank()
+  )
+)
+
+etiquetas_chr <- geom_text(
+  data        = limites_chr_df,
+  aes(x = centro_mb, label = etiqueta),
+  y           = -Inf,
+  vjust       = -0.5,
+  size        = 2.5,
+  color       = "gray30",
+  inherit.aes = FALSE
+)
+
+# -------------------------------------------------------
+# PANEL 1: Genes
+# -------------------------------------------------------
+plot_genes <- densidades_2mb_df %>%
+  filter(tipo == "Genes") %>%
+  ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
+  geom_line(linewidth = 0.6, alpha = 0.9) +
+  lineas_chr +
+  etiquetas_chr +
+  labs(
+    x       = NULL,
+    y       = "Densidad génica\n(genes / Mb)"
+  )
+
+# -------------------------------------------------------
+# PANEL 2: LTR/Copia + LTR/Gypsy
+# -------------------------------------------------------
+plot_ltr <- densidades_2mb_df %>%
+  filter(tipo %in% c("LTR/Copia", "LTR/Gypsy")) %>%
+  ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
+  geom_line(linewidth = 0.6, alpha = 0.9) +
+  lineas_chr +
+  etiquetas_chr +
+  labs(
+    x = NULL,
+    y = "Densidad LTR\n(elementos / Mb)"
+  )
+
+# -------------------------------------------------------
+# PANEL 3: TIR + MITEs
+# -------------------------------------------------------
+plot_tir_mites <- densidades_2mb_df %>%
+  filter(tipo %in% c("TIR", "MITEs")) %>%
+  ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
+  geom_line(linewidth = 0.6, alpha = 0.9) +
+  lineas_chr +
+  etiquetas_chr +
+  labs(
+    x = "Posición genómica (Mb)",
+    y = "Densidad TIR\n(elementos / Mb)"
+  ) +
+  theme(axis.text.x = element_blank())
+
+# -------------------------------------------------------
+# COMBINAR CON PATCHWORK
+# -------------------------------------------------------
+plot_genes / plot_ltr / plot_tir_mites +
+  plot_layout(heights = c(1, 2, 2), guides = "collect") &
+  theme(legend.position = "top")
+```
+
+**Panel superior — Densidad génica**
+
+La densidad génica oscila entre \~25 y \~80 genes/Mb con una
+distribución relativamente uniforme a lo largo de todos los cromosomas,
+con caídas puntuales que podrían corresponder a regiones
+pericentroméricas o heterocromáticas.
+
+**Panel central — Retrotransposones LTR**
+
+Los elementos **Gypsy** presentan densidades consistentemente superiores
+a **Copia** a lo largo de todo el genoma. Ambas superfamilias muestran
+picos de densidad pronunciados y localizados que coinciden con las
+regiones de menor densidad génica, confirmando la correlación negativa
+observada en el análisis de ventanas de 1 Mb (ρ~Gypsy~ = `r rho_gypsy`,
+ρ~Copia~ = `r rho_copia`).
+
+**Panel inferior — Transposones de ADN**
+
+Los elementos **TIR** autónomos y los **MITEs** presentan densidades
+similares y una distribución más homogénea que los LTR a lo largo del
+genoma, sin picos tan pronunciados ni una asociación tan clara con las
+regiones de baja densidad génica, coherente con las correlaciones de
+Spearman más débiles obtenidas para estos elementos (ρ~MITEs~ =
+`r rho_mites_genes`, ρ~autónomos~ = `r rho_autonomos_genes`).
+
+En conjunto, la figura evidencia patrones de distribución claramente
+diferenciados entre retrotransposones LTR y transposones de ADN,
+reflejando sus distintos mecanismos de transposición y preferencias de
+inserción respecto a la organización génica del genoma.

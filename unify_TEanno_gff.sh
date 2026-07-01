@@ -40,11 +40,6 @@ fi
 echo "Archivos encontrados (${#GFF_FILES[@]}), en este orden:"
 printf '  %s\n' "${GFF_FILES[@]}"
 
-# ---------------------------------------------------------
-# Script awk: procesa todos los GFF en orden, omite cabeceras
-# "##..." (conservando las lineas "###"), y renumera ID=/Parent=
-# por prefijo con offsets acumulados entre archivos.
-# ---------------------------------------------------------
 cat > "$TMP_AWK" << 'AWK_EOF'
 BEGIN { FS = OFS = "\t" }
 
@@ -98,25 +93,17 @@ FNR == 1 {
 }
 AWK_EOF
 
-# ---------------------------------------------------------
-# Cabecera unificada: la de EDTA (a partir del primer cromosoma)
-# + una nota indicando que es un archivo unificado del genoma.
-# ---------------------------------------------------------
 {
     head -1 "${GFF_FILES[0]}"
     echo "## NOTE: unified genome-wide GFF3 generated from per-chromosome EDTA TEanno outputs (ID and Parent attributes renumbered to be unique and continuous across the genome)."
     grep -E '^##' "${GFF_FILES[0]}" | grep -v '^###$' | tail -n +2
 } > "$OUTPUT"
 
-# ---------------------------------------------------------
-# Cuerpo unificado
-# ---------------------------------------------------------
+
 awk -f "$TMP_AWK" "${GFF_FILES[@]}" > "$TMP_BODY"
 cat "$TMP_BODY" >> "$OUTPUT"
 
-# ---------------------------------------------------------
-# Resumen / comprobaciones
-# ---------------------------------------------------------
+
 echo ""
 echo "GFF3 unificado escrito en: $OUTPUT"
 echo "Total de lineas de feature (sin contar separadores ###): $(grep -vc '^###$' "$TMP_BODY")"

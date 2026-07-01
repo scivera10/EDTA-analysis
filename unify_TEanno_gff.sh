@@ -6,16 +6,6 @@ set -euo pipefail
 # de todos los cromosomas en un unico GFF3 del genoma completo, con
 # la MISMA ESTRUCTURA que produce EDTA:
 #
-#   - una sola cabecera "##..." (la de EDTA + una nota indicando
-#     que es un archivo unificado)
-#   - se conservan las lineas separadoras "###" entre bloques de
-#     features
-#   - los atributos ID=PREFIJO_N y Parent=PREFIJO_N se renumeran de
-#     forma continua a lo largo de todo el genoma (chr2 continua
-#     donde terminan los contadores de chr1, etc.), tal y como
-#     saldrian si EDTA hubiese anotado el genoma completo de una
-#     sola vez. Los atributos Name=, classification=, etc. no se
-#     modifican (son IDs de familia de la libreria de TEs).
 #
 # Uso:
 #   ./unify_TEanno_gff.sh [directorio_base] [archivo_salida]

@@ -85,13 +85,13 @@ colores_superfamilias <- c(
 # Actualiza estas rutas a la ubicación de tus archivos locales
 
 # GFF3 con los elementos transponibles intactos anotados por EDTA
-ruta_gff3_edta    <- "../Analisis_EDTA_Csativa_hap2/Cast.1_0.hap2.EDTA.TEanno.gff3" # <- Cambiar 
+ruta_gff3_edta    <- "ruta/al/gff" # <- Cambiar 
 
 # Ruta al FASTA
-ruta_fasta_genoma <- "F:/data_base/plants/Castanea_sativa/italian_annotation/haplotype_2/Cast.1_0.hap2.fa"
+ruta_fasta_genoma <- "ruta/al/fasta"
 
 # GFF con la anotación de genes del NCBI (No tiene por qué ser del NCBI)
-ruta_gff_genes_ncbi   <- "F:/data_base/plants/Castanea_sativa/italian_annotation/haplotype_2/Cast.1_0.hap2.gff" #<- Cambiar
+ruta_gff_genes_ncbi   <- "ruta/al/gff" #<- Cambiar
 
 
 ```

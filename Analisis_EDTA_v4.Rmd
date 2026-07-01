@@ -1,6 +1,6 @@
 ---
 title: "Análisis de elementos transponibles anotados por EDTA"
-author: "Sergio Civera Arroyo"
+author: "Escribir_el_nombre_del_autor"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -81,10 +81,8 @@ colores_superfamilias <- c(
 ```
 
 ```{r rutas-archivos, include=FALSE}
-# ============================================================
 # RUTAS DE ARCHIVOS DE ENTRADA
 # Actualiza estas rutas a la ubicación de tus archivos locales
-# ============================================================
 
 # GFF3 con los elementos transponibles intactos anotados por EDTA
 ruta_gff3_edta    <- "ruta/al/gff" # <- Cambiar 
@@ -101,9 +99,7 @@ ruta_gff_genes_ncbi   <- "ruta/al/gff" #<- Cambiar
 
 
 ```{r importar-datos, message=FALSE, warning=FALSE, include=FALSE}
-# -------------------------------------------------------
 # IMPORTACIÓN DE DATOS
-# -------------------------------------------------------
 
 # 1. GFF3 de EDTA: importado como GRanges y como data frame
 gff3_edta_gr <- import(ruta_gff3_edta)
@@ -113,17 +109,11 @@ gff3_edta_df <- as.data.frame(gff3_edta_gr)
 gff_genes_ncbi_gr <- import(ruta_gff_genes_ncbi)
 gff_genes_ncbi_df <- as.data.frame(gff_genes_ncbi_gr)
 
-# -------------------------------------------------------
 # TAMAÑO DEL GENOMA: calculado directamente desde el FASTA
-# fasta.seqlengths() solo lee las cabeceras, no las secuencias
-# -------------------------------------------------------
 longitudes_fasta_raw <- fasta.seqlengths(ruta_fasta_genoma)
 genome_size <- sum(longitudes_fasta_raw)
 
-# -------------------------------------------------------
-# CÁLCULO DE ESTADÍSTICOS POR CLASE DE TE (integrado desde EDTA_stats.R)
-# Se calculan directamente desde el GFF3, sin necesidad de generar CSVs intermedios
-# -------------------------------------------------------
+# CÁLCULO DE ESTADÍSTICOS POR CLASE DE TE
 
 # Calcular clases de TE directamente desde gff3_edta_df (ya importado con rtracklayer)
 # Garantiza coherencia con el resto del análisis: todos los chunks parten del mismo objeto
@@ -196,9 +186,7 @@ clases_te_df <- as.data.frame(class_stats_dt[, .(
 ```
 
 ```{r preparar-cromosomas, include=FALSE}
-# -------------------------------------------------------
 # PREPARACIÓN DEL OBJETO DE CROMOSOMAS PARA KARYOPLOTTER
-# -------------------------------------------------------
 
 # 1. Reutilizar las longitudes cromosómicas ya calculadas en importar-datos
 #    (fasta.seqlengths() ya fue llamado allí para obtener genome_size)
@@ -279,9 +267,7 @@ stopifnot(
 ```
 
 ```{r crear-granges-ltr, include=FALSE}
-# -------------------------------------------------------
 # OBJETOS GRanges PARA LTR RETROTRANSPOSONES Y GENES
-# -------------------------------------------------------
 
 gypsy_gr   <- gff3_edta_df %>%
   filter(type == "Gypsy_LTR_retrotransposon") %>%
@@ -751,11 +737,9 @@ flanqueantes de los retrotransposones LTR intactos, que oscila entre
 d.  Edad de los LTR.
 
 ```{r calcular-edad-ltr, echo=FALSE}
-# -------------------------------------------------------
 # CÁLCULO DE LA EDAD DE INSERCIÓN DE LOS LTR
 # Fórmula: edad = (1 - identidad) / (2 × tasa_mutacion)
-# Tasa de mutación para plantas (Ossowski et al. 2010): 2.29 × 10⁻⁹
-# -------------------------------------------------------
+
 tasa_mutacion_ltr <- 2.29e-9
 
 ltr_con_edad_df <- ltr_intactos_df %>%
@@ -896,9 +880,7 @@ antiguas en el genoma.
 e.  Distancia al gen más cercano.
 
 ```{r calcular-distancias-ltr-gen, warning=FALSE, include=FALSE}
-# -------------------------------------------------------
 # DISTANCIA DE CADA LTR AL GEN MÁS CERCANO
-# -------------------------------------------------------
 
 # Calcular distancias para Gypsy y Copia
 distancias_gypsy_hits  <- distanceToNearest(gypsy_gr, genes_gr, ignore.strand = TRUE)
@@ -1081,9 +1063,7 @@ en la distancia al gen más cercano entre los elementos Gypsy y Copia (p
 `r format.pval(wilcox_dist$p.value, digits = 3, eps = .Machine$double.eps)`).
 
 ```{r calcular-solapamientos-gen, include=FALSE}
-# -------------------------------------------------------
 # SOLAPAMIENTO DE LTR CON GENES
-# -------------------------------------------------------
 solapamientos_gypsy <- countOverlaps(gypsy_gr, genes_gr, ignore.strand = TRUE)
 solapamientos_copia <- countOverlaps(copia_gr, genes_gr, ignore.strand = TRUE)
 
@@ -1237,9 +1217,7 @@ los diagramas de caja indican la mediana y el rango intercuartílico para
 las superfamilias Copia y Gypsy.
 
 ```{r distribucion-tamanos-ltr, include=FALSE}
-# -------------------------------------------------------
 # DISTRIBUCIÓN DE TAMAÑOS DE LTR INTACTOS Y FRAGMENTOS
-# -------------------------------------------------------
 
 # Elementos intactos (anotados por estructura)
 ltr_intactos_tamano_df <- gff3_edta_df %>%
@@ -1349,11 +1327,7 @@ f.  Correlación entre densidad de LTR y densidad génica por ventanas
     genómicas.
 
 ```{r ventanas-deslizantes-densidad, include=FALSE}
-# -------------------------------------------------------
 # ANÁLISIS DE VENTANAS GENÓMICAS DESLIZANTES (1 Mb)
-# Objetivo: correlacionar la densidad de LTR Gypsy y Copia
-# con la densidad génica a lo largo del genoma.
-# -------------------------------------------------------
 
 # 1. Construir el vector de longitudes cromosómicas con nombre
 #    (Chr_1 ... Chr_12) a partir del mapa de cromosomas
@@ -1821,9 +1795,7 @@ cromosoma.
 c.  Análisis de MITEs
 
 ```{r clasificar-mites-autonomos, include=FALSE}
-# -------------------------------------------------------
 # CLASIFICACIÓN DE ELEMENTOS TIR EN MITES Y AUTÓNOMOS
-# -------------------------------------------------------
 
 # Vector de clasificaciones MITE y autónomas por familia
 clasificaciones_tir_df <- gff3_edta_df %>%
@@ -1908,9 +1880,7 @@ proporción de MITEs fue **`r familia_max_mite_nombre`**
 generación de elementos no autónomos en esta familia.
 
 ```{r analisis-clases-mites, include=FALSE}
-# -------------------------------------------------------
 # ANÁLISIS DE LAS CLASES DE MITES
-# -------------------------------------------------------
 
 mites_df <- clasificaciones_tir_df %>%
   filter(tipo_elemento == "MITE") %>%
@@ -2015,9 +1985,7 @@ ggplot(mites_chr_df, aes(x = etiqueta_chr, y = cantidad, fill = familia)) +
 ```
 
 ```{r distancia-mites-autonomos-global, include=FALSE}
-# -------------------------------------------------------
 # DISTANCIA AL GEN MÁS CERCANO: MITES VS AUTÓNOMOS
-# -------------------------------------------------------
 
 mites_gr     <- clasificaciones_tir_df %>%
   filter(tipo_elemento == "MITE") %>%
@@ -2116,9 +2084,7 @@ Según el test de Wilcoxon, la diferencia entre ambos grupos es
 
 
 ```{r ventanas-mites-autonomos, message=FALSE, include=FALSE}
-# -------------------------------------------------------
 # ANÁLISIS DE VENTANAS DE 1 Mb: MITES VS AUTÓNOMOS
-# -------------------------------------------------------
 
 # Contar MITEs y autónomos por ventana
 n_mites_por_ventana     <- countOverlaps(ventanas_gr, mites_gr,     ignore.strand = TRUE)
@@ -2220,10 +2186,7 @@ respecto a las regiones génicas del genoma.
 d.  Distribución del tamaño de los elementos TIR.
 
 ```{r distribucion-tamanos-tir, include=FALSE}
-# -------------------------------------------------------
 # DISTRIBUCIÓN DE TAMAÑOS DE ELEMENTOS TIR ESTRUCTURALES
-# Comparación entre MITEs y autónomos completos (method=structural)
-# -------------------------------------------------------
 
 # Autónomos estructuralmente completos
 tir_autonomos_tamano_df <- clasificaciones_tir_df %>%
@@ -2328,9 +2291,7 @@ que reduce drásticamente su tamaño respecto a los elementos autónomos
 parentales.
 
 ```{r grafico-tamanos-mites-por-clase, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figura 31. Distribución de tamaños de MITEs estructuralmente completos por clase."}
-# -------------------------------------------------------
 # DISTRIBUCIÓN DE TAMAÑOS DE MITES POR CLASE
-# -------------------------------------------------------
 
 # Añadir longitud a mites_tamano_df si no existe
 mites_tamano_clase_df <- mites_tamano_df
@@ -2396,10 +2357,7 @@ probablemente determinadas por los requisitos mínimos de reconocimiento
 de la transposasa parental.
 
 ```{r preparar-datos-resumen-global, include=FALSE}
-# -------------------------------------------------------
 # PREPARACIÓN DE DATOS PARA EL GRÁFICO DE RESUMEN GLOBAL
-# -------------------------------------------------------
-
 # Función para calcular densidad por ventana
 calcular_densidad <- function(elementos_gr, ventanas_gr, nombre) {
   data.frame(
@@ -2473,12 +2431,10 @@ panel inferior la densidad de transposones de ADN (**TIR** autónomos en
 morado y **MITEs** en naranja).
 
 ```{r grafico-resumen-global, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Figura 32. Distribución genómica de los principales elementos repetitivos (ventanas de 2 Mb). Panel superior: densidad génica. Panel central: LTR Copia (azul) y Gypsy (rojo). Panel inferior: TIR autónomos (morado) y MITEs (naranja)."}
-# -------------------------------------------------------
 # GRÁFICO DE RESUMEN GLOBAL CON PATCHWORK - 3 PANELES
 # Panel 1: Genes
 # Panel 2: LTR/Copia + LTR/Gypsy
 # Panel 3: TIR + MITEs
-# -------------------------------------------------------
 
 # Paleta de colores
 colores_tipo <- c(
@@ -2523,9 +2479,7 @@ etiquetas_chr <- geom_text(
   inherit.aes = FALSE
 )
 
-# -------------------------------------------------------
 # PANEL 1: Genes
-# -------------------------------------------------------
 plot_genes <- densidades_2mb_df %>%
   filter(tipo == "Genes") %>%
   ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
@@ -2537,9 +2491,7 @@ plot_genes <- densidades_2mb_df %>%
     y       = "Densidad génica\n(genes / Mb)"
   )
 
-# -------------------------------------------------------
 # PANEL 2: LTR/Copia + LTR/Gypsy
-# -------------------------------------------------------
 plot_ltr <- densidades_2mb_df %>%
   filter(tipo %in% c("LTR/Copia", "LTR/Gypsy")) %>%
   ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
@@ -2551,9 +2503,7 @@ plot_ltr <- densidades_2mb_df %>%
     y = "Densidad LTR\n(elementos / Mb)"
   )
 
-# -------------------------------------------------------
 # PANEL 3: TIR + MITEs
-# -------------------------------------------------------
 plot_tir_mites <- densidades_2mb_df %>%
   filter(tipo %in% c("TIR", "MITEs")) %>%
   ggplot(aes(x = posicion_genomica_mb, y = densidad, color = tipo)) +
@@ -2566,9 +2516,7 @@ plot_tir_mites <- densidades_2mb_df %>%
   ) +
   theme(axis.text.x = element_blank())
 
-# -------------------------------------------------------
 # COMBINAR CON PATCHWORK
-# -------------------------------------------------------
 plot_genes / plot_ltr / plot_tir_mites +
   plot_layout(heights = c(1, 2, 2), guides = "collect") &
   theme(legend.position = "top")
